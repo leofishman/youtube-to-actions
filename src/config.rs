@@ -22,14 +22,12 @@ pub struct YoutubeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessingConfig {
-    /// Ollama endpoint (e.g. http://localhost:11434)
-    pub ollama_url: Option<String>,
-    /// Model name (e.g. "llama3.2")
-    pub ollama_model: Option<String>,
-    /// Alternative: use a remote API (OpenAI-compatible)
-    pub api_url: Option<String>,
-    pub api_key: Option<String>,
-    pub api_model: Option<String>,
+    /// LLM base URL (OpenAI-compatible, e.g. http://192.168.1.150:8080 for llama.cpp)
+    pub llm_base_url: Option<String>,
+    /// Model name (e.g. model filename for llama.cpp)
+    pub llm_model: Option<String>,
+    /// Optional API key (llama.cpp doesn't need one)
+    pub llm_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,14 +62,14 @@ impl Config {
         cfg.output.sp_tag_learn = cfg.output.sp_tag_learn.or(Some("learn".into()));
         cfg.output.sp_tag_dev = cfg.output.sp_tag_dev.or(Some("dev".into()));
 
-        // Resolve credentials path relative to project root if relative
+        // Resolve credentials path relative to config file location if relative
         if let Some(ref creds) = cfg.youtube.credentials_path {
             if !PathBuf::from(creds).is_absolute() {
-                // Try to resolve relative to config file location
                 if let Some(config_dir) = path.parent() {
                     let resolved = config_dir.join(creds);
                     if resolved.exists() {
-                        cfg.youtube.credentials_path = Some(resolved.to_string_lossy().to_string());
+                        cfg.youtube.credentials_path =
+                            Some(resolved.to_string_lossy().to_string());
                     }
                 }
             }

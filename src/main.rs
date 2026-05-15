@@ -11,6 +11,7 @@ use config::Config;
 use std::path::PathBuf;
 use types::ProcessResult;
 use youtube::YoutubeClient;
+use anyhow::Context;
 
 #[derive(Parser)]
 #[command(name = "yt2action", about = "YouTube playlist → tasks/notes automator")]
@@ -155,13 +156,17 @@ async fn cmd_run(
 
     let proc = processor::Processor::new(
         cfg.processing
-            .ollama_url
+            .llm_base_url
             .as_deref()
-            .unwrap_or("http://localhost:11434"),
+            .context("llm_base_url not set in config")?,
         cfg.processing
-            .ollama_model
+            .llm_model
             .as_deref()
-            .unwrap_or("llama3.2"),
+            .context("llm_model not set in config")?,
+        cfg.processing
+            .llm_api_key
+            .as_deref()
+            .unwrap_or(""),
         valid_folders,
     );
 
@@ -483,14 +488,14 @@ playlist_id = "YOUR_PLAYLIST_ID"
 # processed_playlist_id = "YOUR_PROCESSED_PLAYLIST_ID"
 
 [processing]
-# AI processing via Ollama (local)
-ollama_url = "http://localhost:11434"
-ollama_model = "llama3.2"
+# LLM base URL (OpenAI-compatible)
+# Para llama.cpp: http://192.168.1.150:8080
+# Para OpenAI: https://api.openai.com/v1
+llm_base_url = "http://localhost:11434"
+llm_model = "llama3.2"
 
-# Alternative: remote API (OpenAI-compatible), uncomment to use instead:
-# api_url = "https://api.openai.com/v1"
-# api_key = "sk-..."
-# api_model = "gpt-4o-mini"
+# API key (opcional — llama.cpp no necesita)
+# llm_api_key = "sk-..."
 
 [output]
 # Obsidian vault — notes go to Learn/, Ideas/, Resources/ etc. (automatically)

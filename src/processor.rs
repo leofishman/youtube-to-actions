@@ -1,26 +1,33 @@
 use crate::types::{Classification, ProcessedVideo, SuggestedAction, Video, VideoCategory};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 
-/// AI processor: takes a video + transcript, returns classification + summary + target folder
+/// AI processor: sends video + transcript to an OpenAI-compatible LLM API
 pub struct Processor {
     client: reqwest::Client,
-    ollama_url: String,
-    ollama_model: String,
-    /// List of valid vault folders the AI can choose from (lowercase for matching)
+    base_url: String,
+    model: String,
+    api_key: String,
+    /// List of valid vault folders (lowercase for matching)
     valid_folders: Vec<String>,
     /// Original case versions of folders
     valid_folders_pretty: Vec<String>,
 }
 
 impl Processor {
-    pub fn new(ollama_url: &str, ollama_model: &str, valid_folders: Vec<String>) -> Self {
+    pub fn new(
+        base_url: &str,
+        model: &str,
+        api_key: &str,
+        valid_folders: Vec<String>,
+    ) -> Self {
         let pretty = valid_folders.clone();
         let lower: Vec<String> = valid_folders.iter().map(|f| f.to_lowercase()).collect();
         Self {
             client: reqwest::Client::new(),
-            ollama_url: ollama_url.trim_end_matches('/').to_string(),
-            ollama_model: ollama_model.to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model: model.to_string(),
+            api_key: api_key.to_string(),
             valid_folders: lower,
             valid_folders_pretty: pretty,
         }
@@ -28,10 +35,13 @@ impl Processor {
 
     /// Process a video through the LLM to get summary, key points, classification, and folder
     pub async fn process(&self, video: &Video, transcript: Option<&str>) -> Result<ProcessedVideo> {
-        let prompt = self.build_prompt(video, transcript);
-        let response = self.call_ollama(&prompt).await?;
+        let messages = self.build_messages(video, transcript);
+        let response = self.call_llm(&messages).await?;
 
-        log::debug!("AI raw response (first 500 chars): {}", &response[..response.len().min(500)]);
+        log::debug!(
+            "AI raw response (first 500 chars): {}",
+            &response[..response.len().min(500)]
+        );
 
         let parsed = self.parse_response(&response);
 
@@ -55,7 +65,8 @@ impl Processor {
         })
     }
 
-    fn build_prompt(&self, video: &Video, transcript: Option<&str>) -> String {
+    /// Build chat messages (system + user) for the OpenAI-compatible API
+    fn build_messages(&self, video: &Video, transcript: Option<&str>) -> Vec<Value> {
         let duration = match video.duration_seconds {
             Some(s) if s > 3600 => format!("{:.1}h", s as f64 / 3600.0),
             Some(s) if s > 60 => format!("{}m", s / 60),
@@ -70,7 +81,7 @@ impl Processor {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let mut prompt = format!(
+        let mut user_content = format!(
             r#"Analyze this YouTube video and return a JSON object.
 
 Title: {title}
@@ -86,33 +97,32 @@ Description:
         );
 
         if let Some(transcript) = transcript {
-            // Include more transcript content for better analysis
             let max_chars = 12000;
             let truncated = if transcript.len() > max_chars {
-                format!("{}...[TRUNCATED at {} chars]", &transcript[..max_chars], max_chars)
+                format!(
+                    "...[TRUNCATED at {} chars]",
+                    max_chars
+                )
             } else {
                 transcript.to_string()
             };
-            prompt.push_str(&format!(
-                "\nTranscript:\n{truncated}\n"
-            ));
+            user_content.push_str(&format!("\nTranscript:\n{truncated}\n"));
         }
 
-        // Build the folder constraint as an explicit list
-        prompt.push_str(&format!(
-            r#"
-Respond with ONLY valid JSON (no markdown, no code fences):
+        let system_prompt = format!(
+            r#"You are a video content analyzer. You MUST respond with ONLY valid JSON (no markdown, no code fences, no explanation).
 
+Expected JSON format:
 {{
   "summary": "2-3 paragraph summary in Spanish",
   "key_points": ["point 1", "point 2", "point 3"],
   "category": "tutorial|news|concept|entertainment|tool|health|other",
   "tags": ["tag1", "tag2"],
   "suggested_action": "watch_full|read_transcript|save_for_later|archive",
-  "target_folder": "EXACTLY one of the folder names listed below — pick the one that best matches the video CONTENT"
+  "target_folder": "EXACTLY one folder from the AVAILABLE FOLDERS list below"
 }}
 
-AVAILABLE FOLDERS (pick EXACTLY one):
+AVAILABLE FOLDERS (target_folder MUST be exactly one of these):
 {folders_list}
 
 RULES:
@@ -121,34 +131,61 @@ RULES:
 - category: tutorial=how-to, news=current events, concept=theoretical/thematic, entertainment=fun, tool=software/product/service, health=wellness/nutrition/fitness/medicine
 - tags: Short keywords relevant to content (e.g. ["rust", "api", "backend"])
 - suggested_action: archive=just note it, read_transcript=summary enough, watch_full=need to see it, save_for_later=interesting but not urgent
-- target_folder: Choose the BEST folder from the list above based on the video TITLE, DESCRIPTION, and TRANSCRIPT. Read the content and decide where this fits best.
+- target_folder: Choose the BEST folder based on the video TITLE, DESCRIPTION, and TRANSCRIPT. Read the content and decide what category it belongs to.
 
-IMPORTANT: "target_folder" must be EXACTLY one value from the AVAILABLE FOLDERS list above, with NO extra text, NO quotes around the whole thing, and NO explanation. Example: "Health" or "Learn" or "Resources/YouTube".
-"#,
-            folders_list = folders_list,
-        ));
+IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDERS. No extra text, no quotes around the field value, no explanation. Just the folder name. Example: "Health" or "Learn" or "Resources/YouTube""#,
+            folders_list = folders_list
+        );
 
-        prompt
+        vec![
+            serde_json::json!({"role": "system", "content": system_prompt}),
+            serde_json::json!({"role": "user", "content": user_content}),
+        ]
     }
 
-    async fn call_ollama(&self, prompt: &str) -> Result<String> {
+    /// Call OpenAI-compatible /v1/chat/completions endpoint (like llama.cpp)
+    async fn call_llm(&self, messages: &[Value]) -> Result<String> {
+        let url = format!("{}/v1/chat/completions", self.base_url);
+
         let body = serde_json::json!({
-            "model": self.ollama_model,
-            "prompt": prompt,
+            "model": self.model,
+            "messages": messages,
             "stream": false,
-            "format": "json",
+            "temperature": 0.1,
         });
 
-        let resp = self
+        let mut req = self
             .client
-            .post(format!("{}/api/generate", self.ollama_url))
-            .json(&body)
-            .send()
-            .await?
-            .json::<Value>()
-            .await?;
+            .post(&url)
+            .json(&body);
 
-        Ok(resp["response"].as_str().unwrap_or("{ }").to_string())
+        // Add auth header if api_key is provided (llama.cpp often doesn't need one)
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("LLM API request failed to {url}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("LLM API error (HTTP {status}): {text}");
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .context("Failed to parse LLM API response JSON")?;
+
+        let content = json["choices"][0]["message"]["content"]
+            .as_str()
+            .context("No content in LLM response")?
+            .to_string();
+
+        Ok(content)
     }
 
     fn parse_response(&self, raw: &str) -> ParsedOutput {
@@ -236,12 +273,15 @@ IMPORTANT: "target_folder" must be EXACTLY one value from the AVAILABLE FOLDERS 
             let ai_lower = ai_folder.to_lowercase();
             match self.valid_folders.iter().position(|f| f == &ai_lower) {
                 Some(idx) => {
-                    log::debug!("AI folder '{ai_folder}' matched to '{}'", self.valid_folders_pretty[idx]);
+                    log::debug!(
+                        "AI folder '{ai_folder}' matched to '{}'",
+                        self.valid_folders_pretty[idx]
+                    );
                     Some(self.valid_folders_pretty[idx].clone())
                 }
                 None => {
                     log::warn!(
-                        "AI returned unknown folder '{ai_folder}'. Valid options: {}",
+                        "AI returned unknown folder '{ai_folder}'. Valid: {}",
                         self.valid_folders_pretty.join(", ")
                     );
                     None
@@ -250,7 +290,6 @@ IMPORTANT: "target_folder" must be EXACTLY one value from the AVAILABLE FOLDERS 
         };
 
         let target_folder = target_folder.unwrap_or_else(|| {
-            // Fallback: use the category-to-folder mapping
             let fb = match category {
                 VideoCategory::Tutorial => "Learn",
                 VideoCategory::Concept => "Ideas",
