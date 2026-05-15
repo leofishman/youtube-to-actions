@@ -7,17 +7,22 @@ pub struct Processor {
     client: reqwest::Client,
     ollama_url: String,
     ollama_model: String,
-    /// List of valid vault folders the AI can choose from
+    /// List of valid vault folders the AI can choose from (lowercase for matching)
     valid_folders: Vec<String>,
+    /// Original case versions of folders
+    valid_folders_pretty: Vec<String>,
 }
 
 impl Processor {
     pub fn new(ollama_url: &str, ollama_model: &str, valid_folders: Vec<String>) -> Self {
+        let pretty = valid_folders.clone();
+        let lower: Vec<String> = valid_folders.iter().map(|f| f.to_lowercase()).collect();
         Self {
             client: reqwest::Client::new(),
             ollama_url: ollama_url.trim_end_matches('/').to_string(),
             ollama_model: ollama_model.to_string(),
-            valid_folders,
+            valid_folders: lower,
+            valid_folders_pretty: pretty,
         }
     }
 
@@ -25,7 +30,20 @@ impl Processor {
     pub async fn process(&self, video: &Video, transcript: Option<&str>) -> Result<ProcessedVideo> {
         let prompt = self.build_prompt(video, transcript);
         let response = self.call_ollama(&prompt).await?;
+
+        log::debug!("AI raw response (first 500 chars): {}", &response[..response.len().min(500)]);
+
         let parsed = self.parse_response(&response);
+
+        log::info!(
+            "  🧠 AI → categoría: {:?}, carpeta: {}, acción: {:?}",
+            parsed.classification.category,
+            parsed.target_folder,
+            parsed.classification.suggested_action,
+        );
+        if !parsed.classification.tags.is_empty() {
+            log::info!("  🏷️  Tags: {}", parsed.classification.tags.join(", "));
+        }
 
         Ok(ProcessedVideo {
             video: video.clone(),
@@ -45,7 +63,12 @@ impl Processor {
             None => "unknown".to_string(),
         };
 
-        let folders = self.valid_folders.join(" / ");
+        let folders_list = self
+            .valid_folders_pretty
+            .iter()
+            .map(|f| format!("  - \"{f}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let mut prompt = format!(
             r#"Analyze this YouTube video and return a JSON object.
@@ -53,7 +76,8 @@ impl Processor {
 Title: {title}
 Channel: {channel}
 Duration: {duration}
-Description: {description}
+Description:
+{description}
 "#,
             title = video.title,
             channel = video.channel,
@@ -62,12 +86,19 @@ Description: {description}
         );
 
         if let Some(transcript) = transcript {
+            // Include more transcript content for better analysis
+            let max_chars = 12000;
+            let truncated = if transcript.len() > max_chars {
+                format!("{}...[TRUNCATED at {} chars]", &transcript[..max_chars], max_chars)
+            } else {
+                transcript.to_string()
+            };
             prompt.push_str(&format!(
-                "\nTranscript (first 8000 chars):\n{}\n",
-                &transcript[..transcript.len().min(8000)]
+                "\nTranscript:\n{truncated}\n"
             ));
         }
 
+        // Build the folder constraint as an explicit list
         prompt.push_str(&format!(
             r#"
 Respond with ONLY valid JSON (no markdown, no code fences):
@@ -78,18 +109,23 @@ Respond with ONLY valid JSON (no markdown, no code fences):
   "category": "tutorial|news|concept|entertainment|tool|health|other",
   "tags": ["tag1", "tag2"],
   "suggested_action": "watch_full|read_transcript|save_for_later|archive",
-  "target_folder": "one of: {folders}"
+  "target_folder": "EXACTLY one of the folder names listed below — pick the one that best matches the video CONTENT"
 }}
 
-Rules:
+AVAILABLE FOLDERS (pick EXACTLY one):
+{folders_list}
+
+RULES:
 - summary: In Spanish, concise but informative
 - key_points: 3-7 bullet points of actionable takeaways
-- category: tutorial=how-to, news=current events, concept=theoretical, entertainment=fun, tool=software/product, health=wellness
+- category: tutorial=how-to, news=current events, concept=theoretical/thematic, entertainment=fun, tool=software/product/service, health=wellness/nutrition/fitness/medicine
 - tags: Short keywords relevant to content (e.g. ["rust", "api", "backend"])
 - suggested_action: archive=just note it, read_transcript=summary enough, watch_full=need to see it, save_for_later=interesting but not urgent
-- target_folder: Choose the BEST folder based on the video CONTENT, not just its category. Read the transcript and decide where this fits best in the vault structure.
+- target_folder: Choose the BEST folder from the list above based on the video TITLE, DESCRIPTION, and TRANSCRIPT. Read the content and decide where this fits best.
+
+IMPORTANT: "target_folder" must be EXACTLY one value from the AVAILABLE FOLDERS list above, with NO extra text, NO quotes around the whole thing, and NO explanation. Example: "Health" or "Learn" or "Resources/YouTube".
 "#,
-            folders = folders
+            folders_list = folders_list,
         ));
 
         prompt
@@ -112,23 +148,39 @@ Rules:
             .json::<Value>()
             .await?;
 
-        Ok(resp["response"].as_str().unwrap_or("{}").to_string())
+        Ok(resp["response"].as_str().unwrap_or("{ }").to_string())
     }
 
     fn parse_response(&self, raw: &str) -> ParsedOutput {
         let v: Value = match serde_json::from_str(raw) {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                log::warn!("AI JSON parse error: {e}. Attempting recovery...");
+                log::debug!("Raw AI response: {raw}");
+                // Try to find JSON in the response (handle markdown code fences, etc.)
                 let start = raw.find('{');
                 let end = raw.rfind('}');
                 match (start, end) {
-                    (Some(s), Some(e)) => {
-                        serde_json::from_str(&raw[s..=e]).unwrap_or(Value::Null)
+                    (Some(s), Some(e)) if s < e => {
+                        let extracted = &raw[s..=e];
+                        serde_json::from_str(extracted).unwrap_or_else(|e2| {
+                            log::error!("JSON recovery also failed: {e2}");
+                            log::debug!("Extracted JSON attempt: {extracted}");
+                            Value::Null
+                        })
                     }
-                    _ => Value::Null,
+                    _ => {
+                        log::error!("No JSON found in AI response at all");
+                        Value::Null
+                    }
                 }
             }
         };
+
+        if v == Value::Null {
+            log::error!("AI returned no usable JSON. Returning default values.");
+            return ParsedOutput::default();
+        }
 
         let summary = v["summary"]
             .as_str()
@@ -171,24 +223,46 @@ Rules:
             })
             .unwrap_or_default();
 
-        // AI-suggested folder — validate it's in our list
-        let target_folder = v["target_folder"]
+        // Case-insensitive folder matching with logging
+        let ai_folder = v["target_folder"]
             .as_str()
-            .map(|s| s.to_string())
-            .filter(|f| self.valid_folders.iter().any(|vf| vf == f))
-            .unwrap_or_else(|| {
-                // Fallback: use the category-to-folder mapping
-                match category {
-                    VideoCategory::Tutorial => "Learn",
-                    VideoCategory::Concept => "Ideas",
-                    VideoCategory::Tool => "Resources",
-                    VideoCategory::News => "Resources",
-                    VideoCategory::Health => "Health",
-                    VideoCategory::Entertainment => "Things",
-                    VideoCategory::Other(_) => "Resources/YouTube",
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let target_folder = if ai_folder.is_empty() {
+            log::warn!("AI did not return a target_folder value");
+            None
+        } else {
+            let ai_lower = ai_folder.to_lowercase();
+            match self.valid_folders.iter().position(|f| f == &ai_lower) {
+                Some(idx) => {
+                    log::debug!("AI folder '{ai_folder}' matched to '{}'", self.valid_folders_pretty[idx]);
+                    Some(self.valid_folders_pretty[idx].clone())
                 }
-                .to_string()
-            });
+                None => {
+                    log::warn!(
+                        "AI returned unknown folder '{ai_folder}'. Valid options: {}",
+                        self.valid_folders_pretty.join(", ")
+                    );
+                    None
+                }
+            }
+        };
+
+        let target_folder = target_folder.unwrap_or_else(|| {
+            // Fallback: use the category-to-folder mapping
+            let fb = match category {
+                VideoCategory::Tutorial => "Learn",
+                VideoCategory::Concept => "Ideas",
+                VideoCategory::Tool => "Resources",
+                VideoCategory::News => "Resources",
+                VideoCategory::Health => "Health",
+                VideoCategory::Entertainment => "Things",
+                VideoCategory::Other(_) => "Resources/YouTube",
+            };
+            log::info!("  Fallback: category {:?} → folder '{fb}'", category);
+            fb.to_string()
+        });
 
         ParsedOutput {
             summary,
@@ -208,4 +282,19 @@ struct ParsedOutput {
     key_points: Vec<String>,
     target_folder: String,
     classification: Classification,
+}
+
+impl Default for ParsedOutput {
+    fn default() -> Self {
+        Self {
+            summary: "No se pudo generar resumen.".to_string(),
+            key_points: vec![],
+            target_folder: "Resources/YouTube".to_string(),
+            classification: Classification {
+                category: VideoCategory::Other("unknown".to_string()),
+                tags: vec![],
+                suggested_action: SuggestedAction::SaveForLater,
+            },
+        }
+    }
 }
