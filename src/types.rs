@@ -46,6 +46,8 @@ pub struct ProcessedVideo {
     pub summary: String,
     pub key_points: Vec<String>,
     pub classification: Classification,
+    /// Vault folder suggested by the AI based on video content
+    pub target_folder: String,
 }
 
 /// State file: tracks which videos we've already processed

@@ -114,7 +114,22 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
 
     log::info!("Processing {} new videos...", new_videos.len());
 
-    // Initialize processor
+    // Initialize processor with available vault folders for AI to choose from
+    let mut valid_folders = vec![
+        "Learn".into(),
+        "Ideas".into(),
+        "Resources".into(),
+        "Health".into(),
+        "Things".into(),
+        "Resources/YouTube".into(),
+    ];
+    // Add any user-configured overrides
+    for folder in cfg.output.category_folders.values() {
+        if !valid_folders.contains(folder) {
+            valid_folders.push(folder.clone());
+        }
+    }
+
     let proc = processor::Processor::new(
         cfg.processing
             .ollama_url
@@ -124,6 +139,7 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
             .ollama_model
             .as_deref()
             .unwrap_or("llama3.2"),
+        valid_folders,
     );
 
     for video in &new_videos {
@@ -138,7 +154,7 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
                 // Create Obsidian note (primary output)
                 if let Some(ref vault) = cfg.output.obsidian_vault {
                     let vault_path = PathBuf::from(vault);
-                    match obsidian::create_note(&vault_path, &processed, &cfg.output.category_folders) {
+                    match obsidian::create_note(&vault_path, &processed) {
                         Ok(path) => log::info!("  📝 Note created: {:?}", path),
                         Err(e) => log::error!("  ❌ Failed to create note: {e}"),
                     }

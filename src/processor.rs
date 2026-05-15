@@ -2,23 +2,26 @@ use crate::types::{Classification, ProcessedVideo, SuggestedAction, Video, Video
 use anyhow::Result;
 use serde_json::Value;
 
-/// AI processor: takes a video + transcript, returns classification + summary
+/// AI processor: takes a video + transcript, returns classification + summary + target folder
 pub struct Processor {
     client: reqwest::Client,
     ollama_url: String,
     ollama_model: String,
+    /// List of valid vault folders the AI can choose from
+    valid_folders: Vec<String>,
 }
 
 impl Processor {
-    pub fn new(ollama_url: &str, ollama_model: &str) -> Self {
+    pub fn new(ollama_url: &str, ollama_model: &str, valid_folders: Vec<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
             ollama_url: ollama_url.trim_end_matches('/').to_string(),
             ollama_model: ollama_model.to_string(),
+            valid_folders,
         }
     }
 
-    /// Process a video through the LLM to get summary, key points, and classification
+    /// Process a video through the LLM to get summary, key points, classification, and folder
     pub async fn process(&self, video: &Video, transcript: Option<&str>) -> Result<ProcessedVideo> {
         let prompt = self.build_prompt(video, transcript);
         let response = self.call_ollama(&prompt).await?;
@@ -30,6 +33,7 @@ impl Processor {
             summary: parsed.summary,
             key_points: parsed.key_points,
             classification: parsed.classification,
+            target_folder: parsed.target_folder,
         })
     }
 
@@ -40,6 +44,8 @@ impl Processor {
             Some(s) => format!("{}s", s),
             None => "unknown".to_string(),
         };
+
+        let folders = self.valid_folders.join(" / ");
 
         let mut prompt = format!(
             r#"Analyze this YouTube video and return a JSON object.
@@ -62,17 +68,18 @@ Description: {description}
             ));
         }
 
-        prompt.push_str(
+        prompt.push_str(&format!(
             r#"
 Respond with ONLY valid JSON (no markdown, no code fences):
 
-{
+{{
   "summary": "2-3 paragraph summary in Spanish",
   "key_points": ["point 1", "point 2", "point 3"],
   "category": "tutorial|news|concept|entertainment|tool|health|other",
   "tags": ["tag1", "tag2"],
-  "suggested_action": "watch_full|read_transcript|save_for_later|archive"
-}
+  "suggested_action": "watch_full|read_transcript|save_for_later|archive",
+  "target_folder": "one of: {folders}"
+}}
 
 Rules:
 - summary: In Spanish, concise but informative
@@ -80,8 +87,10 @@ Rules:
 - category: tutorial=how-to, news=current events, concept=theoretical, entertainment=fun, tool=software/product, health=wellness
 - tags: Short keywords relevant to content (e.g. ["rust", "api", "backend"])
 - suggested_action: archive=just note it, read_transcript=summary enough, watch_full=need to see it, save_for_later=interesting but not urgent
+- target_folder: Choose the BEST folder based on the video CONTENT, not just its category. Read the transcript and decide where this fits best in the vault structure.
 "#,
-        );
+            folders = folders
+        ));
 
         prompt
     }
@@ -110,7 +119,6 @@ Rules:
         let v: Value = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(_) => {
-                // Try to extract JSON from the response (in case model wraps it in text)
                 let start = raw.find('{');
                 let end = raw.rfind('}');
                 match (start, end) {
@@ -163,9 +171,29 @@ Rules:
             })
             .unwrap_or_default();
 
+        // AI-suggested folder — validate it's in our list
+        let target_folder = v["target_folder"]
+            .as_str()
+            .map(|s| s.to_string())
+            .filter(|f| self.valid_folders.iter().any(|vf| vf == f))
+            .unwrap_or_else(|| {
+                // Fallback: use the category-to-folder mapping
+                match category {
+                    VideoCategory::Tutorial => "Learn",
+                    VideoCategory::Concept => "Ideas",
+                    VideoCategory::Tool => "Resources",
+                    VideoCategory::News => "Resources",
+                    VideoCategory::Health => "Health",
+                    VideoCategory::Entertainment => "Things",
+                    VideoCategory::Other(_) => "Resources/YouTube",
+                }
+                .to_string()
+            });
+
         ParsedOutput {
             summary,
             key_points,
+            target_folder,
             classification: Classification {
                 category,
                 tags,
@@ -178,5 +206,6 @@ Rules:
 struct ParsedOutput {
     summary: String,
     key_points: Vec<String>,
+    target_folder: String,
     classification: Classification,
 }
