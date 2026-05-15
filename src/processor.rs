@@ -62,7 +62,60 @@ impl Processor {
             key_points: parsed.key_points,
             classification: parsed.classification,
             target_folder: parsed.target_folder,
+            fabric_output: None,
         })
+    }
+
+    /// Process a video with a Fabric pattern, returning the raw markdown output
+    pub async fn process_with_pattern(
+        &self,
+        video: &Video,
+        transcript: Option<&str>,
+        pattern_name: &str,
+        patterns_dir: &str,
+    ) -> Result<String> {
+        // Load the Fabric pattern's system prompt
+        let pattern_path = std::path::PathBuf::from(patterns_dir)
+            .join(pattern_name)
+            .join("system.md");
+
+        let system_prompt = std::fs::read_to_string(&pattern_path)
+            .with_context(|| format!("Fabric pattern not found: {:?}", pattern_path))?;
+
+        log::info!("  📜 Applying Fabric pattern: {pattern_name}");
+
+        // Build user content (same as our prompt)
+        let duration = match video.duration_seconds {
+            Some(s) if s > 3600 => format!("{:.1}h", s as f64 / 3600.0),
+            Some(s) if s > 60 => format!("{}m", s / 60),
+            Some(s) => format!("{}s", s),
+            None => "unknown".to_string(),
+        };
+
+        let mut user_content = format!(
+            "Title: {title}\nChannel: {channel}\nDuration: {duration}\n\nDescription:\n{description}\n",
+            title = video.title,
+            channel = video.channel,
+            duration = duration,
+            description = video.description
+        );
+
+        if let Some(transcript) = transcript {
+            let max_chars = 12000;
+            let truncated = if transcript.len() > max_chars {
+                format!("...[TRUNCATED at {} chars]", max_chars)
+            } else {
+                transcript.to_string()
+            };
+            user_content.push_str(&format!("\nTranscript:\n{truncated}\n"));
+        }
+
+        let messages = vec![
+            serde_json::json!({"role": "system", "content": system_prompt}),
+            serde_json::json!({"role": "user", "content": user_content}),
+        ];
+
+        self.call_llm(&messages).await
     }
 
     /// Build chat messages (system + user) for the OpenAI-compatible API

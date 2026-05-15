@@ -50,6 +50,8 @@ pub struct ProcessedVideo {
     pub classification: Classification,
     /// Vault folder suggested by the AI based on video content
     pub target_folder: String,
+    /// Optional rich analysis from a Fabric pattern
+    pub fabric_output: Option<String>,
 }
 
 /// State file: tracks which videos we've already processed

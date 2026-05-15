@@ -35,6 +35,12 @@ enum Commands {
         /// Reprocess videos even if already processed
         #[arg(short, long)]
         force: bool,
+
+        /// Apply a Fabric pattern for rich content analysis
+        /// (e.g. "extract_wisdom", "summarize", "analyze_claims")
+        /// Patterns stored in ~/.config/fabric/patterns/
+        #[arg(short, long)]
+        pattern: Option<String>,
     },
     /// Initialize a default config file
     Init {
@@ -69,7 +75,8 @@ async fn main() -> anyhow::Result<()> {
             config,
             limit,
             force,
-        } => cmd_run(config, limit, force).await,
+            pattern,
+        } => cmd_run(config, limit, force, pattern).await,
         Commands::Init { output } => cmd_init(output),
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
@@ -81,6 +88,7 @@ async fn cmd_run(
     config_path: Option<PathBuf>,
     limit: usize,
     force: bool,
+    pattern: Option<String>,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
@@ -181,7 +189,32 @@ async fn cmd_run(
 
         // AI processing
         match proc.process(video, transcript.as_deref()).await {
-            Ok(processed) => {
+            Ok(mut processed) => {
+                // If a Fabric pattern is specified, run the second phase
+                if let Some(ref pattern_name) = pattern {
+                    let patterns_dir = format!(
+                        "{}/.config/fabric/patterns",
+                        std::env::var("HOME").unwrap_or_default()
+                    );
+
+                    match proc
+                        .process_with_pattern(
+                            video,
+                            transcript.as_deref(),
+                            pattern_name,
+                            &patterns_dir,
+                        )
+                        .await
+                    {
+                        Ok(fabric_output) => {
+                            processed.fabric_output = Some(fabric_output);
+                            log::info!("  📜 Fabric pattern output stored");
+                        }
+                        Err(e) => {
+                            log::warn!("  ⚠️ Fabric pattern failed: {e}");
+                        }
+                    }
+                }
                 let mut result = ProcessResult {
                     video_title: video.title.clone(),
                     video_url: format!("https://youtube.com/watch?v={}", video.id),

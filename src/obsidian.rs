@@ -23,7 +23,7 @@ pub fn create_note(
         None => "unknown".to_string(),
     };
 
-    let content = format!(
+    let mut content = format!(
         r#"---
 title: "{title}"
 url: https://youtube.com/watch?v={id}
@@ -47,10 +47,6 @@ tags: [{tags}]
 ## Puntos Clave
 
 {key_points}
-
-## Transcripción
-
-> {transcript_note}
 "#,
         title = processed.video.title,
         id = processed.video.id,
@@ -72,11 +68,23 @@ tags: [{tags}]
             .map(|p| format!("- {p}"))
             .collect::<Vec<_>>()
             .join("\n"),
-        transcript_note = match processed.transcript {
+    );
+
+    // Append Fabric pattern analysis if available
+    if let Some(ref fabric_output) = processed.fabric_output {
+        // Clean up fabric output — remove the INPUT: marker if present
+        let cleaned = fabric_output.replace("INPUT:\n", "").replace("INPUT:", "");
+        content.push_str(&format!("\n## Análisis Profundo\n\n{cleaned}\n"));
+    }
+
+    // Transcript section
+    content.push_str(&format!(
+        "\n## Transcripción\n\n> {}\n",
+        match processed.transcript {
             Some(_) => "Disponible en el procesamiento original.",
             None => "No disponible para este video.",
-        },
-    );
+        }
+    ));
 
     std::fs::write(&path, &content)
         .with_context(|| format!("Failed to write note: {:?}", path))?;

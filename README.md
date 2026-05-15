@@ -1,11 +1,21 @@
 # yt2action 🎬 → 📋
 
-Watch a **private YouTube playlist**, process new videos with AI (Ollama), and automatically create:
+Watch a **private YouTube playlist**, process new videos with AI, and automatically create:
 
-- 📝 **Notes in Obsidian vault** — categorized into Learn/, Ideas/, Resources/, Health/ or Things/ depending on the video content
+- 📝 **Notes in Obsidian vault** — AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on the actual video content
 - ✅ Optionally: **Tasks in Super Productivity** (configurable)
 
-Built with **Rust 🦀** — single binary, ~5MB, zero runtime deps, runs quietly in background via cron.
+Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in background via cron.
+
+## Features
+
+- 🧠 **AI classification** — analyzes title + description + transcript to categorize each video
+- 📁 **Smart folder routing** — AI picks the Obsidian folder, with case-insensitive fallback
+- 🎨 **Fabric patterns** — optional deep analysis via community Fabric patterns (`--pattern extract_wisdom`)
+- 📋 **Final report** — detailed summary of what was processed and where it was saved
+- 🔄 **Playlist cleanup** — optionally move processed videos to a second playlist
+- 🏷️ **Auto-tagging** — relevant keywords extracted from the content
+- 💾 **State tracking** — only processes new videos (use `--force` to reprocess)
 
 ## Quick Start
 
@@ -16,7 +26,7 @@ Built with **Rust 🦀** — single binary, ~5MB, zero runtime deps, runs quietl
 # 2. Initialize config
 cargo run -- init
 
-# 3. Edit config with your playlist ID
+# 3. Edit config with your playlist ID and LLM endpoint
 vim ~/.config/yt2action/config.toml
 
 # 4. Authenticate with Google (opens browser — only needed once)
@@ -44,8 +54,8 @@ sudo cp target/release/yt2action /usr/local/bin/
 | **`credentials.json`** | OAuth client secret — place in project root | Downloaded during OAuth client creation above |
 | **YouTube Data API v3** | Must be enabled for your project | [Enable here](https://console.cloud.google.com/apis/library/youtube.googleapis.com) |
 | **Super Productivity** | Receives tasks via Local REST API | Settings → Misc → **Enable local REST API** (port 3876) |
-| **Ollama** (optional) | AI processing: summaries + classification | `ollama pull llama3.2` — or configure a remote API in config |
-| **Obsidian vault** (optional) | Notes are written to `Resources/YouTube/` | Set `obsidian_vault` in config |
+| **LLM server** | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below |
+| **Obsidian vault** (optional) | Notes are sorted into folders by theme | Set `obsidian_vault` in config |
 
 ## Commands
 
@@ -79,9 +89,35 @@ yt2action run
 # Process only the 3 newest
 yt2action run --limit 3
 
+# Reprocess already-processed videos
+yt2action run --force
+
+# Apply a Fabric pattern for deep content analysis
+yt2action run --pattern extract_wisdom
+
+# Combine options
+yt2action run --limit 1 --force --pattern summarize
+
 # Use a custom config file
 yt2action run --config ~/.config/yt2action/custom.toml
 ```
+
+### Fabric Patterns
+
+You can apply any [Fabric pattern](https://github.com/danielmiessler/fabric) for rich content analysis:
+
+```bash
+# Extract wisdom from the video (IDEAS, INSIGHTS, QUOTES, etc.)
+yt2action run --pattern extract_wisdom
+
+# Get a structured summary
+yt2action run --pattern summarize
+
+# Analyze claims made in the video
+yt2action run --pattern analyze_claims
+```
+
+The pattern output is appended to the Obsidian note under an "## Análisis Profundo" section.
 
 ### `yt2action list`
 
@@ -94,7 +130,7 @@ yt2action list
 
 ### `yt2action init`
 
-Creates `~/.config/yt2action/config.toml` with default values. Edit it with your playlist ID.
+Creates `~/.config/yt2action/config.toml` with default values.
 
 ### `yt2action health`
 
@@ -113,28 +149,43 @@ File: `~/.config/yt2action/config.toml`
 credentials_path = "credentials.json"
 playlist_id = "PL_xxxxxxxxxxxxxxxxxxxx"
 
+# Optional: move processed videos here
+# processed_playlist_id = "PL_yyyyyyyyyyyyyyyyyy"
+
 [processing]
-ollama_url = "http://localhost:11434"
-ollama_model = "llama3.2"
+# OpenAI-compatible API endpoint (llama.cpp, Ollama, OpenAI, etc.)
+llm_base_url = "http://192.168.1.150:8080"
+llm_model = "your-model-name"
+
+# API key (optional — llama.cpp doesn't need one)
+# llm_api_key = "sk-..."
 
 [output]
 obsidian_vault = "/home/leo/Memory/lenovo1"
 sp_enabled = false
+
+# Optional: override category → vault folder mapping
+# [output.category_folders]
+# tutorial = "Knowledge/Tutorials"
+# health = "Wellness"
 ```
+
+### LLM Support
+
+yt2action uses the **OpenAI-compatible API** format (`/v1/chat/completions`), so it works with:
+
+| Server | Example `llm_base_url` |
+|--------|----------------------|
+| **llama.cpp** | `http://192.168.1.150:8080` |
+| **Ollama** | `http://localhost:11434` |
+| **OpenAI** | `https://api.openai.com/v1` (+ set `llm_api_key`) |
+| **Any OpenAI-compatible** | Point to your server |
 
 ## Cron Setup
 
 ```bash
-# Every 6 hours, process the 3 newest videos
-0 */6 * * * /usr/local/bin/yt2action run --limit 3 >> ~/.yt2action.log 2>&1
-```
-
-Or via **Hermes Agent**:
-
-```bash
-hermes cron create \
-  --schedule "0 */6 * * *" \
-  --prompt "Ejecuta yt2action run --limit 3"
+# Every 6 hours, process the 3 newest videos with wisdom extraction
+0 */6 * * * /usr/local/bin/yt2action run --limit 3 --pattern extract_wisdom >> ~/.yt2action.log 2>&1
 ```
 
 ## How It Works
@@ -142,21 +193,37 @@ hermes cron create \
 ```
 You add video to private playlist 📥
         │
-        ▼ (every 6h via cron)
+        ▼ (via cron or manual)
 yt2action run
         │
-        ├── YouTube OAuth → fetch new videos
+        ├── YouTube OAuth → fetch playlist
         ├── youtube-transcript → get CC captions
-        ├── Ollama → summarize + classify + tag
+        ├── Phase 1: AI classification → category + folder + tags
+        │     (or via Fabric pattern if --pattern is set)
         └── Actions:
-            ├── 📝 Obsidian: note in category folder
-            └── ✅ Optional: SP task
+            ├── 📝 Obsidian: note in AI-chosen folder
+            ├── ✅ Optional: SP task
+            └── 🔄 Optional: move to processed playlist
 ```
 
-### Category → Folder mapping
+### AI Classification
 
-| Video Category | Vault Folder | Example |
-|---------------|-------------|---------|
+1. **Phase 1 (always)**: The LLM analyzes title + description + transcript and returns structured JSON:
+   - `summary` — 2-3 paragraphs in Spanish
+   - `key_points` — actionable takeaways
+   - `category` — tutorial, concept, tool, news, health, entertainment, other
+   - `tags` — relevant keywords
+   - `suggested_action` — watch_full, read_transcript, save_for_later, archive
+   - `target_folder` — the best Obsidian folder for this content
+
+2. **Phase 2 (optional)**: With `--pattern`, a Fabric pattern is applied for enriched analysis
+
+### Category → Folder mapping (fallback)
+
+If the AI doesn't return a valid folder, it falls back to:
+
+| Category | Vault Folder | Example |
+|----------|-------------|---------|
 | Tutorial | `Learn/` | Rust tutorial, cooking class |
 | Concept | `Ideas/` | ZKP explanation, mental model |
 | Tool / News | `Resources/` | New CLI tool, tech announcement |
@@ -168,12 +235,12 @@ yt2action run
 
 ```
 src/
-├── main.rs         → CLI (clap), orchestration, state management
+├── main.rs         → CLI (clap), orchestration, report, state management
 ├── config.rs       → TOML config loader
-├── types.rs        → Video, ProcessedVideo, Classification, SpTask
-├── youtube.rs      → YouTube Data API v3 + OAuth2 (yup-oauth2)
-├── transcript.rs   → CC transcript fetcher (youtube-transcript crate)
-├── processor.rs    → Ollama/LLM: summary, key points, classification
+├── types.rs        → Video, ProcessedVideo, Classification, ProcessResult
+├── youtube.rs      → YouTube Data API v3 + OAuth2 + playlist management
+├── transcript.rs   → CC transcript fetcher
+├── processor.rs    → LLM client (OpenAI-compatible) + Fabric pattern support
 ├── sp_api.rs       → Super Productivity REST API client
 └── obsidian.rs     → Markdown note writer for Obsidian vault
 ```
