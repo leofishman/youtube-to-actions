@@ -9,6 +9,7 @@ mod youtube;
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::path::PathBuf;
+use types::ProcessResult;
 use youtube::YoutubeClient;
 
 #[derive(Parser)]
@@ -26,9 +27,13 @@ enum Commands {
         #[arg(short, long)]
         config: Option<PathBuf>,
 
-        /// Only process N newest videos
+        /// Only process N videos (default: 5)
         #[arg(short, long, default_value = "5")]
         limit: usize,
+
+        /// Reprocess videos even if already processed
+        #[arg(short, long)]
+        force: bool,
     },
     /// Initialize a default config file
     Init {
@@ -59,7 +64,11 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { config, limit } => cmd_run(config, limit).await,
+        Commands::Run {
+            config,
+            limit,
+            force,
+        } => cmd_run(config, limit, force).await,
         Commands::Init { output } => cmd_init(output),
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
@@ -67,7 +76,11 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<()> {
+async fn cmd_run(
+    config_path: Option<PathBuf>,
+    limit: usize,
+    force: bool,
+) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
     // Check SP is running
@@ -100,21 +113,32 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
     let state_path = get_state_path()?;
     let mut state = load_state(&state_path);
 
-    // Filter new videos
-    let new_videos: Vec<_> = videos
-        .iter()
-        .filter(|v| !state.is_processed(&v.id))
-        .take(limit)
-        .collect();
+    // Filter videos: if force, ignore state; otherwise skip processed
+    let to_process: Vec<_> = if force {
+        videos.iter().take(limit).collect()
+    } else {
+        videos
+            .iter()
+            .filter(|v| !state.is_processed(&v.id))
+            .take(limit)
+            .collect()
+    };
 
-    if new_videos.is_empty() {
+    if to_process.is_empty() {
         log::info!("No new videos to process.");
+        if videos.len() > 0 && !force {
+            log::info!("Tip: use --force to reprocess already processed videos.");
+        }
         return Ok(());
     }
 
-    log::info!("Processing {} new videos...", new_videos.len());
+    log::info!(
+        "Processing {} video{}...",
+        to_process.len(),
+        if to_process.len() == 1 { "" } else { "s" }
+    );
 
-    // Initialize processor with available vault folders for AI to choose from
+    // Build valid folder list for the AI
     let mut valid_folders = vec![
         "Learn".into(),
         "Ideas".into(),
@@ -123,7 +147,6 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
         "Things".into(),
         "Resources/YouTube".into(),
     ];
-    // Add any user-configured overrides
     for folder in cfg.output.category_folders.values() {
         if !valid_folders.contains(folder) {
             valid_folders.push(folder.clone());
@@ -142,7 +165,10 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
         valid_folders,
     );
 
-    for video in &new_videos {
+    // Track results for the final report
+    let mut results: Vec<ProcessResult> = Vec::new();
+
+    for video in &to_process {
         log::info!("Processing: {}", video.title);
 
         // Get transcript
@@ -151,12 +177,29 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
         // AI processing
         match proc.process(video, transcript.as_deref()).await {
             Ok(processed) => {
+                let mut result = ProcessResult {
+                    video_title: video.title.clone(),
+                    video_url: format!("https://youtube.com/watch?v={}", video.id),
+                    target_folder: processed.target_folder.clone(),
+                    note_path: None,
+                    sp_task_id: None,
+                    moved_to_processed: false,
+                    suggested_action: processed.classification.suggested_action.clone(),
+                    tags: processed.classification.tags.clone(),
+                    error: None,
+                };
+
                 // Create Obsidian note (primary output)
                 if let Some(ref vault) = cfg.output.obsidian_vault {
                     let vault_path = PathBuf::from(vault);
                     match obsidian::create_note(&vault_path, &processed) {
-                        Ok(path) => log::info!("  📝 Note created: {:?}", path),
-                        Err(e) => log::error!("  ❌ Failed to create note: {e}"),
+                        Ok(path) => {
+                            result.note_path = Some(path.to_string_lossy().to_string());
+                            log::info!("  📝 Note created: {:?}", path);
+                        }
+                        Err(e) => {
+                            log::error!("  ❌ Failed to create note: {e}");
+                        }
                     }
                 }
 
@@ -187,25 +230,149 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
                     };
 
                     match sp.create_task(&task).await {
-                        Ok(id) => log::info!("  ✅ Task created: {id}"),
+                        Ok(id) => {
+                            result.sp_task_id = Some(id.clone());
+                            log::info!("  ✅ Task created: {id}");
+                        }
                         Err(e) => log::error!("  ❌ Failed to create task: {e}"),
                     }
                 }
 
-                // Mark as processed
-                state.mark_processed(video.id.clone());
+                // Post-processing: move video to processed playlist
+                if let Some(ref processed_pl) = cfg.youtube.processed_playlist_id {
+                    match yt
+                        .add_to_playlist(processed_pl, &video.id)
+                        .await
+                    {
+                        Ok(_new_item_id) => {
+                            // Remove from source playlist
+                            match yt.remove_from_playlist(&video.playlist_item_id).await {
+                                Ok(()) => {
+                                    result.moved_to_processed = true;
+                                    log::info!(
+                                        "  ✅ Moved to processed playlist: {processed_pl}"
+                                    );
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "  ⚠️ Added to processed playlist but could not \
+                                         remove from source: {e}"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "  ⚠️ Could not add to processed playlist: {e}"
+                            );
+                        }
+                    }
+                }
+
+                // Mark as processed (only if not moving — if moving, it's already gone)
+                if cfg.youtube.processed_playlist_id.is_none() {
+                    state.mark_processed(video.id.clone());
+                }
+
+                results.push(result);
             }
             Err(e) => {
                 log::error!("  ❌ Failed to process '{}': {e}", video.title);
+                results.push(ProcessResult {
+                    video_title: video.title.clone(),
+                    video_url: format!("https://youtube.com/watch?v={}", video.id),
+                    target_folder: String::new(),
+                    note_path: None,
+                    sp_task_id: None,
+                    moved_to_processed: false,
+                    suggested_action: types::SuggestedAction::SaveForLater,
+                    tags: vec![],
+                    error: Some(e.to_string()),
+                });
             }
         }
     }
 
-    // Save state
+    // Save state (only for videos not moved to another playlist)
     save_state(&state_path, &state)?;
-    log::info!("Done! Processed {} videos.", new_videos.len());
+
+    // --- FINAL REPORT ---
+    print_report(&results, &cfg);
 
     Ok(())
+}
+
+/// Print a beautiful summary report after processing
+fn print_report(results: &[ProcessResult], cfg: &Config) {
+    let _total = results.len();
+    let errors: Vec<_> = results.iter().filter(|r| r.error.is_some()).collect();
+    let success: Vec<_> = results.iter().filter(|r| r.error.is_none()).collect();
+
+    println!();
+    println!("══════════════════════════════════════════════════════");
+    println!("           📋 REPORTE DE PROCESAMIENTO");
+    println!("══════════════════════════════════════════════════════");
+    println!();
+
+    for (i, r) in results.iter().enumerate() {
+        let icon = if r.error.is_some() { "❌" } else { "✅" };
+        println!("  {icon}  {}. {}", i + 1, r.video_title);
+        println!("     🔗  {0}", r.video_url);
+
+        if let Some(ref path) = r.note_path {
+            println!("     📝  {path}");
+        }
+        if let Some(ref task_id) = r.sp_task_id {
+            println!("     📋  SP task: {task_id}");
+        }
+        if r.moved_to_processed {
+            println!("     📁  Movido a playlist de procesados");
+        }
+        if let Some(ref action) = action_emoji(&r.suggested_action) {
+            println!("     {action}");
+        }
+        if !r.tags.is_empty() {
+            println!("     🏷️  {}", r.tags.join(", "));
+        }
+        if let Some(ref err) = r.error {
+            println!("     ❌  Error: {err}");
+        }
+        println!();
+    }
+
+    println!("──────────────────────────────────────────────────");
+    println!(
+        "  Total: {} procesado{} | {} error{}",
+        success.len(),
+        if success.len() == 1 { "" } else { "s" },
+        errors.len(),
+        if errors.len() == 1 { "" } else { "es" }
+    );
+    if let Some(ref vault) = cfg.output.obsidian_vault {
+        println!("  📁  Vault: {vault}");
+    }
+    if let Some(ref processed_pl) = cfg.youtube.processed_playlist_id {
+        println!("  📁  Playlist destino: {processed_pl}");
+    }
+    println!("══════════════════════════════════════════════════════");
+    println!();
+}
+
+fn action_emoji(action: &types::SuggestedAction) -> Option<&'static str> {
+    match action {
+        types::SuggestedAction::WatchFull => {
+            Some("👀  Sugerencia: Ver completo (vale la pena)")
+        }
+        types::SuggestedAction::ReadTranscript => {
+            Some("📖  Sugerencia: Solo leer resumen")
+        }
+        types::SuggestedAction::SaveForLater => {
+            Some("💾  Sugerencia: Guardar para después")
+        }
+        types::SuggestedAction::Archive => {
+            Some("📦  Sugerencia: Archivar (referencia)")
+        }
+    }
 }
 
 async fn cmd_list(config_path: Option<PathBuf>) -> anyhow::Result<()> {
@@ -311,6 +478,9 @@ credentials_path = "credentials.json"
 # Private playlist ID to watch
 # From the URL: https://www.youtube.com/playlist?list=PLAYLIST_ID
 playlist_id = "YOUR_PLAYLIST_ID"
+
+# Optional: after processing, move videos here (creates a second private playlist)
+# processed_playlist_id = "YOUR_PROCESSED_PLAYLIST_ID"
 
 [processing]
 # AI processing via Ollama (local)

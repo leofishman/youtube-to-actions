@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Video {
     pub id: String,
+    /// The playlist item ID (used to remove videos from a playlist)
+    pub playlist_item_id: String,
     pub title: String,
     pub channel: String,
     pub description: String,
@@ -30,7 +32,7 @@ pub enum VideoCategory {
     Other(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SuggestedAction {
     WatchFull,
     ReadTranscript,
@@ -89,4 +91,18 @@ pub struct SpTask {
 pub struct SpTaskResponse {
     pub id: String,
     pub title: String,
+}
+
+/// Result of processing a single video (for the final report)
+#[derive(Debug, Clone)]
+pub struct ProcessResult {
+    pub video_title: String,
+    pub video_url: String,
+    pub target_folder: String,
+    pub note_path: Option<String>,
+    pub sp_task_id: Option<String>,
+    pub moved_to_processed: bool,
+    pub suggested_action: SuggestedAction,
+    pub tags: Vec<String>,
+    pub error: Option<String>,
 }

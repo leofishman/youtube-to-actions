@@ -90,8 +90,13 @@ impl YoutubeClient {
                     if video_id.is_empty() {
                         continue;
                     }
+
+                    // Capture the playlist item ID for later removal
+                    let playlist_item_id = item["id"].as_str().unwrap_or("").to_string();
+
                     videos.push(Video {
                         id: video_id,
+                        playlist_item_id,
                         title: snippet["title"].as_str().unwrap_or("").to_string(),
                         channel: snippet["videoOwnerChannelTitle"]
                             .as_str()
@@ -118,6 +123,73 @@ impl YoutubeClient {
 
         self.fill_durations(&token, &mut videos).await?;
         Ok(videos)
+    }
+
+    /// Add a video to a playlist by video ID
+    pub async fn add_to_playlist(&self, playlist_id: &str, video_id: &str) -> Result<String> {
+        let token = self.get_token().await?;
+
+        let body = serde_json::json!({
+            "snippet": {
+                "playlistId": playlist_id,
+                "resourceId": {
+                    "kind": "youtube#video",
+                    "videoId": video_id
+                }
+            }
+        });
+
+        let resp = self
+            .client
+            .post("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet")
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to add video to playlist")?
+            .json::<Value>()
+            .await?;
+
+        if let Some(error) = resp.get("error") {
+            anyhow::bail!(
+                "Failed to add to playlist: {}",
+                error["message"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        let new_item_id = resp["id"]
+            .as_str()
+            .context("No playlist item ID returned")
+            .map(|s| s.to_string())?;
+
+        log::info!("Added video {video_id} to playlist {playlist_id} (item: {new_item_id})");
+        Ok(new_item_id)
+    }
+
+    /// Remove a video from a playlist by playlist item ID
+    pub async fn remove_from_playlist(&self, playlist_item_id: &str) -> Result<()> {
+        let token = self.get_token().await?;
+
+        let url = format!(
+            "https://www.googleapis.com/youtube/v3/playlistItems?id={playlist_item_id}"
+        );
+
+        let resp = self
+            .client
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .context("Failed to remove video from playlist")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to remove from playlist: HTTP {status} — {body}");
+        }
+
+        log::info!("Removed playlist item {playlist_item_id}");
+        Ok(())
     }
 
     async fn fill_durations(&self, token: &str, videos: &mut Vec<Video>) -> Result<()> {

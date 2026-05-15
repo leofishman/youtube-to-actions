@@ -16,6 +16,8 @@ pub struct YoutubeConfig {
     pub credentials_path: Option<String>,
     /// ID of the private playlist to watch
     pub playlist_id: String,
+    /// Optional: after processing, move videos to this playlist
+    pub processed_playlist_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
