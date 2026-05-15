@@ -9,6 +9,7 @@ mod youtube;
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::path::PathBuf;
+use youtube::YoutubeClient;
 
 #[derive(Parser)]
 #[command(name = "yt2action", about = "YouTube playlist → tasks/notes automator")]
@@ -41,12 +42,14 @@ enum Commands {
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
-    /// Health check: test SP API and YouTube API
-    Health {
-        /// Path to config file
+    /// Test YouTube OAuth connection
+    Auth {
+        /// Path to credentials.json
         #[arg(short, long)]
-        config: Option<PathBuf>,
+        credentials: Option<PathBuf>,
     },
+    /// Health check: test SP API
+    Health,
 }
 
 #[tokio::main]
@@ -59,7 +62,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Run { config, limit } => cmd_run(config, limit).await,
         Commands::Init { output } => cmd_init(output),
         Commands::List { config } => cmd_list(config).await,
-        Commands::Health { config } => cmd_health(config).await,
+        Commands::Auth { credentials } => cmd_auth(credentials).await,
+        Commands::Health => cmd_health().await,
     }
 }
 
@@ -75,12 +79,20 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
         }
     }
 
+    // Authenticate with YouTube
+    let creds_path = cfg
+        .youtube
+        .credentials_path
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("credentials.json"));
+
+    log::info!("Authenticating with Google...");
+    let yt = YoutubeClient::authenticate(&creds_path).await?;
+    log::info!("YouTube: authenticated.");
+
     // Fetch playlist
-    log::info!(
-        "Fetching playlist {}...",
-        cfg.youtube.playlist_id
-    );
-    let yt = youtube::YoutubeClient::new(&cfg.youtube.api_key);
+    log::info!("Fetching playlist {}...", cfg.youtube.playlist_id);
     let videos = yt.get_playlist_videos(&cfg.youtube.playlist_id).await?;
     log::info!("Found {} videos in playlist", videos.len());
 
@@ -185,7 +197,14 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
 async fn cmd_list(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
-    let yt = youtube::YoutubeClient::new(&cfg.youtube.api_key);
+    let creds_path = cfg
+        .youtube
+        .credentials_path
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("credentials.json"));
+
+    let yt = YoutubeClient::authenticate(&creds_path).await?;
     let videos = yt.get_playlist_videos(&cfg.youtube.playlist_id).await?;
 
     println!("Playlist: {}", cfg.youtube.playlist_id);
@@ -204,24 +223,51 @@ async fn cmd_list(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_health(config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    let cfg = load_config(config_path)?;
+async fn cmd_auth(credentials: Option<PathBuf>) -> anyhow::Result<()> {
+    let path = credentials.unwrap_or_else(|| PathBuf::from("credentials.json"));
 
-    println!("🔍 Health Check\n");
-
-    // YouTube API
-    println!("📺 YouTube API...");
-    let yt = youtube::YoutubeClient::new(&cfg.youtube.api_key);
-    match yt.get_playlist_videos(&cfg.youtube.playlist_id).await {
-        Ok(v) => println!("   ✅ Connected. {} videos found.", v.len()),
-        Err(e) => println!("   ❌ Failed: {e}"),
+    if !path.exists() {
+        anyhow::bail!(
+            "credentials.json not found at {:?}\n\
+             Download it from Google Cloud Console > APIs & Services > Credentials\n\
+             (OAuth 2.0 Client ID > Desktop App)",
+            path
+        );
     }
 
+    println!("🔑 Authenticating with Google...");
+    println!("   A browser window will open. Sign in with your Google account.\n");
+
+    let yt = YoutubeClient::authenticate(&path).await?;
+
+    // Test with a simple API call
+    match yt.get_playlist_videos("PLEASE_IGNORE_THIS").await {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = e.to_string();
+            // Expected: invalid playlist ID, but that means auth worked
+            if msg.contains("notFound") || msg.contains("404") || msg.contains("invalid") {
+                println!("   ✅ Auth works! (Got expected error about invalid playlist)");
+            } else {
+                println!("   ❌ Auth failed: {e}");
+                return Err(e);
+            }
+        }
+    }
+
+    println!("\n✅ Authentication successful!");
+    println!("   Token cached in token_cache.json (chmod 600 recommended)");
+    Ok(())
+}
+
+async fn cmd_health() -> anyhow::Result<()> {
+    println!("🔍 Health Check\n");
+
     // Super Productivity
-    println!("\n📋 Super Productivity...");
+    println!("📋 Super Productivity...");
     let sp = sp_api::SpClient::new();
     match sp.health_check().await {
-        Ok(true) => println!("   ✅ API responding."),
+        Ok(true) => println!("   ✅ API responding (port 3876)."),
         Ok(false) => println!("   ❌ API not ready."),
         Err(e) => println!("   ❌ Not running: {e}"),
     }
@@ -240,12 +286,14 @@ fn cmd_init(output: Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     let default_config = r#"# yt2action Configuration
-# Copy this to ~/.config/yt2action/config.toml and fill in your values.
+# Run `yt2action init` to create this file, then fill in your values.
 
 [youtube]
-# YouTube Data API v3 key (get from Google Cloud Console)
-api_key = "YOUR_YOUTUBE_API_KEY"
+# Path to credentials.json (Google OAuth Desktop App credentials)
+# Place credentials.json in the project root or provide absolute path
+credentials_path = "credentials.json"
 # Private playlist ID to watch
+# Found in the URL: https://www.youtube.com/playlist?list=PLAYLIST_ID
 playlist_id = "YOUR_PLAYLIST_ID"
 
 [processing]
@@ -275,7 +323,7 @@ obsidian_vault = "/home/leo/Memory/lenovo1"
     }
     std::fs::write(&path, default_config)?;
     println!("✅ Config file created: {:?}", path);
-    println!("   Edit it with your YouTube API key and playlist ID.");
+    println!("   Edit it with your playlist ID and verify credentials.json exists.");
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 [package]
 name = "yt2action"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Watch a private YouTube playlist, process new videos with AI, and create tasks in Super Productivity + notes in Obsidian"
 authors = ["Leo Fishman <leofishman@gmail.com>"]
@@ -26,10 +26,16 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 
+# Hyper (transitive from yup-oauth2, needed for types)
+hyper-util = { version = "0.1", features = ["client-legacy"] }
+
+# OAuth2 for YouTube API (Desktop app flow)
+yup-oauth2 = { version = "12", features = ["hyper-rustls"] }
+
 # YouTube transcript fetching
 youtube-transcript = "0.3"
 
-# URL parsing for video IDs
+# URL parsing
 url = "2"
 
 # Logging

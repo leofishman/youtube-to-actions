@@ -1,3 +1,6 @@
 /target
 .env
 *.toml.bak
+credentials.json
+token_cache.json
+state.json

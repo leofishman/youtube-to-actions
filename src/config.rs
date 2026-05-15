@@ -12,8 +12,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YoutubeConfig {
-    /// YouTube Data API v3 key
-    pub api_key: String,
+    /// Path to credentials.json (Google OAuth Desktop app credentials)
+    pub credentials_path: Option<String>,
     /// ID of the private playlist to watch
     pub playlist_id: String,
 }
@@ -59,6 +59,19 @@ impl Config {
         cfg.output.sp_tag_learn = cfg.output.sp_tag_learn.or(Some("learn".into()));
         cfg.output.sp_tag_dev = cfg.output.sp_tag_dev.or(Some("dev".into()));
 
+        // Resolve credentials path relative to project root if relative
+        if let Some(ref creds) = cfg.youtube.credentials_path {
+            if !PathBuf::from(creds).is_absolute() {
+                // Try to resolve relative to config file location
+                if let Some(config_dir) = path.parent() {
+                    let resolved = config_dir.join(creds);
+                    if resolved.exists() {
+                        cfg.youtube.credentials_path = Some(resolved.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
         Ok(cfg)
     }
 
@@ -66,7 +79,6 @@ impl Config {
     pub fn default_path() -> Result<PathBuf> {
         let dir = directories::ProjectDirs::from("com", "leofishman", "yt2action")
             .context("Failed to find config directory")?;
-        let path = dir.config_dir().join("config.toml");
-        Ok(path)
+        Ok(dir.config_dir().join("config.toml"))
     }
 }
