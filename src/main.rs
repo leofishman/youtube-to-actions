@@ -135,7 +135,16 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
         // AI processing
         match proc.process(video, transcript.as_deref()).await {
             Ok(processed) => {
-                // Create SP task
+                // Create Obsidian note (primary output)
+                if let Some(ref vault) = cfg.output.obsidian_vault {
+                    let vault_path = PathBuf::from(vault);
+                    match obsidian::create_note(&vault_path, &processed, &cfg.output.category_folders) {
+                        Ok(path) => log::info!("  📝 Note created: {:?}", path),
+                        Err(e) => log::error!("  ❌ Failed to create note: {e}"),
+                    }
+                }
+
+                // Create SP task (optional)
                 if cfg.output.sp_enabled {
                     let title = format!("[📺] {}", processed.video.title);
                     let notes = format!(
@@ -164,17 +173,6 @@ async fn cmd_run(config_path: Option<PathBuf>, limit: usize) -> anyhow::Result<(
                     match sp.create_task(&task).await {
                         Ok(id) => log::info!("  ✅ Task created: {id}"),
                         Err(e) => log::error!("  ❌ Failed to create task: {e}"),
-                    }
-                }
-
-                // Create Obsidian note
-                if cfg.output.obsidian_enabled {
-                    if let Some(ref vault) = cfg.output.obsidian_vault {
-                        let vault_path = PathBuf::from(vault);
-                        match obsidian::create_note(&vault_path, &processed) {
-                            Ok(path) => log::info!("  📝 Note created: {:?}", path),
-                            Err(e) => log::error!("  ❌ Failed to create note: {e}"),
-                        }
                     }
                 }
 
@@ -290,32 +288,39 @@ fn cmd_init(output: Option<PathBuf>) -> anyhow::Result<()> {
 
 [youtube]
 # Path to credentials.json (Google OAuth Desktop App credentials)
-# Place credentials.json in the project root or provide absolute path
+# Download from: Google Cloud Console > APIs & Services > Credentials
+# Create > OAuth client ID > Desktop application
 credentials_path = "credentials.json"
+
 # Private playlist ID to watch
-# Found in the URL: https://www.youtube.com/playlist?list=PLAYLIST_ID
+# From the URL: https://www.youtube.com/playlist?list=PLAYLIST_ID
 playlist_id = "YOUR_PLAYLIST_ID"
 
 [processing]
-# Ollama endpoint (leave commented to use remote API instead)
+# AI processing via Ollama (local)
 ollama_url = "http://localhost:11434"
 ollama_model = "llama3.2"
 
-# Remote API (OpenAI-compatible), uncomment to use instead of Ollama:
+# Alternative: remote API (OpenAI-compatible), uncomment to use instead:
 # api_url = "https://api.openai.com/v1"
 # api_key = "sk-..."
 # api_model = "gpt-4o-mini"
 
 [output]
-# Super Productivity
-sp_enabled = true
+# Obsidian vault — notes go to Learn/, Ideas/, Resources/ etc. (automatically)
+obsidian_vault = "/home/leo/Memory/lenovo1"
+
+# Super Productivity (optional — enable if you also want tasks in SP)
+sp_enabled = false
 sp_project_id = "INBOX_PROJECT"
 sp_tag_learn = "learn"
 sp_tag_dev = "dev"
 
-# Obsidian vault (optional)
-obsidian_enabled = false
-obsidian_vault = "/home/leo/Memory/lenovo1"
+# Category → Vault folder mapping (optional — uncomment to override defaults)
+# [output.category_folders]
+# tutorial = "Knowledge/Tutorials"
+# concept = "Knowledge/Concepts"
+# health = "Wellness"
 "#;
 
     if let Some(parent) = path.parent() {

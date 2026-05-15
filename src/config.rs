@@ -41,9 +41,12 @@ pub struct OutputConfig {
     pub sp_tag_dev: Option<String>,
 
     /// Create notes in Obsidian
-    pub obsidian_enabled: bool,
-    /// Path to Obsidian vault
     pub obsidian_vault: Option<String>,
+
+    /// Category → Vault folder mapping
+    /// Override defaults: tutorial, concept, tool, news, health, entertainment, other
+    #[serde(default)]
+    pub category_folders: std::collections::HashMap<String, String>,
 }
 
 impl Config {
