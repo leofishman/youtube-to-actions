@@ -1,0 +1,41 @@
+[package]
+name = "yt2action"
+version = "0.1.0"
+edition = "2024"
+description = "Watch a private YouTube playlist, process new videos with AI, and create tasks in Super Productivity + notes in Obsidian"
+authors = ["Leo Fishman <leofishman@gmail.com>"]
+
+[dependencies]
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Date/time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# YouTube transcript fetching
+youtube-transcript = "0.3"
+
+# URL parsing for video IDs
+url = "2"
+
+# Logging
+env_logger = "0.11"
+log = "0.4"
+
+# Config file parsing
+toml = "0.8"
+directories = "6"

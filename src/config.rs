@@ -1,0 +1,72 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Application configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub youtube: YoutubeConfig,
+    pub processing: ProcessingConfig,
+    pub output: OutputConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YoutubeConfig {
+    /// YouTube Data API v3 key
+    pub api_key: String,
+    /// ID of the private playlist to watch
+    pub playlist_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessingConfig {
+    /// Ollama endpoint (e.g. http://localhost:11434)
+    pub ollama_url: Option<String>,
+    /// Model name (e.g. "llama3.2")
+    pub ollama_model: Option<String>,
+    /// Alternative: use a remote API (OpenAI-compatible)
+    pub api_url: Option<String>,
+    pub api_key: Option<String>,
+    pub api_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputConfig {
+    /// Create tasks in Super Productivity
+    pub sp_enabled: bool,
+    /// SP project ID (default: "INBOX_PROJECT")
+    pub sp_project_id: Option<String>,
+    /// SP tag IDs for tech/learn/dev categories
+    pub sp_tag_learn: Option<String>,
+    pub sp_tag_dev: Option<String>,
+
+    /// Create notes in Obsidian
+    pub obsidian_enabled: bool,
+    /// Path to Obsidian vault
+    pub obsidian_vault: Option<String>,
+}
+
+impl Config {
+    /// Load config from a TOML file, with defaults for optional fields
+    pub fn from_file(path: &PathBuf) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {:?}", path))?;
+        let mut cfg: Config = toml::from_str(&content)
+            .with_context(|| "Failed to parse config file")?;
+
+        // Apply defaults
+        cfg.output.sp_project_id = cfg.output.sp_project_id.or(Some("INBOX_PROJECT".into()));
+        cfg.output.sp_tag_learn = cfg.output.sp_tag_learn.or(Some("learn".into()));
+        cfg.output.sp_tag_dev = cfg.output.sp_tag_dev.or(Some("dev".into()));
+
+        Ok(cfg)
+    }
+
+    /// Default config path: ~/.config/yt2action/config.toml
+    pub fn default_path() -> Result<PathBuf> {
+        let dir = directories::ProjectDirs::from("com", "leofishman", "yt2action")
+            .context("Failed to find config directory")?;
+        let path = dir.config_dir().join("config.toml");
+        Ok(path)
+    }
+}
