@@ -41,6 +41,10 @@ enum Commands {
         /// Patterns stored in ~/.config/fabric/patterns/
         #[arg(short, long)]
         pattern: Option<String>,
+
+        /// Actually download the video file locally (default: false, only fetches transcript)
+        #[arg(long)]
+        download_video: bool,
     },
     /// Initialize a default config file
     Init {
@@ -74,6 +78,10 @@ enum Commands {
         /// Use Fabric pattern for analysis (e.g. "summarize", "extract_wisdom")
         #[arg(short, long)]
         pattern: Option<String>,
+
+        /// Actually download the video file locally (default: false, only fetches transcript)
+        #[arg(long)]
+        download_video: bool,
     },
 }
 
@@ -89,12 +97,13 @@ async fn main() -> anyhow::Result<()> {
             limit,
             force,
             pattern,
-        } => cmd_run(config, limit, force, pattern).await,
+            download_video,
+        } => cmd_run(config, limit, force, pattern, download_video).await,
         Commands::Init { output } => cmd_init(output),
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
-        Commands::Process { video, config, pattern } => cmd_process(video, config, pattern).await,
+        Commands::Process { video, config, pattern, download_video } => cmd_process(video, config, pattern, download_video).await,
     }
 }
 
@@ -103,6 +112,7 @@ async fn cmd_run(
     limit: usize,
     force: bool,
     pattern: Option<String>,
+    download_video_flag: bool,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
@@ -219,6 +229,7 @@ async fn cmd_run(
             &videos_dir,
             &quality,
             &subtitle_langs,
+            download_video_flag,
         )
         .await?;
 
@@ -659,6 +670,7 @@ async fn cmd_process(
     video_arg: String,
     config_path: Option<PathBuf>,
     pattern: Option<String>,
+    download_video_flag: bool,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
@@ -772,6 +784,7 @@ async fn cmd_process(
         &videos_dir,
         &quality,
         &subtitle_langs,
+        download_video_flag,
     )
     .await?;
 

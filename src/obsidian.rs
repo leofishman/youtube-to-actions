@@ -30,8 +30,6 @@ pub fn create_note(
         .map(|p| format!("**Video local:** `{}`", p))
         .unwrap_or_default();
 
-    let has_transcript = processed.transcript.is_some();
-
     let mut content = format!(
         r#"---
 title: "{title}"
@@ -44,6 +42,8 @@ tags: [{tags}]
 ---
 
 # {title}
+
+![Poster](https://img.youtube.com/vi/{id}/maxresdefault.jpg)
 
 **Canal:** {channel}
 **Duración:** {duration}
@@ -88,14 +88,12 @@ tags: [{tags}]
     }
 
     // Transcript section
-    content.push_str(&format!(
-        "\n## Transcripción\n\n{}\n",
-        if has_transcript {
-            "Disponible en el directorio del video local (archivos .vtt/.srt)."
-        } else {
-            "No disponible — el video no tenía subtítulos."
-        }
-    ));
+    let transcript_text = match processed.transcript.as_ref() {
+        Some(t) => t.as_str(),
+        None => "No disponible — el video no tenía subtítulos.",
+    };
+
+    content.push_str(&format!("\n## Transcripción\n\n{}\n", transcript_text));
 
     std::fs::write(&path, &content)
         .with_context(|| format!("Failed to write note: {:?}", path))?;

@@ -113,6 +113,7 @@ pub struct SpTaskResponse {
 pub struct ProcessResult {
     pub video_title: String,
     pub video_url: String,
+    #[allow(dead_code)]
     pub target_folder: String,
     pub note_path: Option<String>,
     pub sp_task_id: Option<String>,
