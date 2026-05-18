@@ -63,6 +63,19 @@ enum Commands {
     },
     /// Health check: test SP API
     Health,
+    /// Process a single video by ID (or by position in playlist)
+    Process {
+        /// Video ID or position number (1-based) in the playlist
+        video: String,
+
+        /// Path to config file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Use Fabric pattern for analysis (e.g. "summarize", "extract_wisdom")
+        #[arg(short, long)]
+        pattern: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -82,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
+        Commands::Process { video, config, pattern } => cmd_process(video, config, pattern).await,
     }
 }
 
@@ -638,5 +652,203 @@ fn load_state(path: &PathBuf) -> types::ProcessState {
 fn save_state(path: &PathBuf, state: &types::ProcessState) -> anyhow::Result<()> {
     let content = serde_json::to_string_pretty(state)?;
     std::fs::write(path, &content)?;
+    Ok(())
+}
+
+/// Process a single video by ID or position in playlist
+async fn cmd_process(
+    video_arg: String,
+    config_path: Option<PathBuf>,
+    pattern: Option<String>,
+) -> anyhow::Result<()> {
+    let cfg = load_config(config_path)?;
+
+    // Authenticate with YouTube
+    let creds_path = cfg
+        .youtube
+        .credentials_path
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("credentials.json"));
+
+    log::info!("Authenticating with Google...");
+    let yt = YoutubeClient::authenticate(&creds_path).await?;
+    log::info!("YouTube: authenticated.");
+
+    // Fetch playlist to find the video
+    log::info!("Fetching playlist {}...", cfg.youtube.playlist_id);
+    let videos = yt.get_playlist_videos(&cfg.youtube.playlist_id).await?;
+
+    // Resolve video by ID or position
+    let video = if video_arg.starts_with("PL") || video_arg.len() > 11 {
+        // Assume it's a video ID
+        videos.iter().find(|v| v.id == video_arg)
+    } else {
+        // Assume it's a position number (1-based)
+        match video_arg.parse::<usize>() {
+            Ok(pos) => {
+                if pos > 0 && pos <= videos.len() {
+                    Some(&videos[pos - 1])
+                } else {
+                    anyhow::bail!(
+                        "Position {} out of range (playlist has {} videos)",
+                        pos,
+                        videos.len()
+                    );
+                }
+            }
+            Err(_) => {
+                // Try as video ID anyway
+                videos.iter().find(|v| v.id == video_arg)
+            }
+        }
+    };
+
+    let video = video.ok_or_else(|| {
+        anyhow::anyhow!("Video not found: {}\nUse a valid video ID or position (1-{})",
+            video_arg, videos.len())
+    })?;
+
+    println!("══════════════════════════════════════════════════════");
+    println!("  📺 PROCESANDO VIDEO INDIVIDUAL");
+    println!("══════════════════════════════════════════════════════");
+    println!("  Título: {}", video.title);
+    println!("  ID: {} (posición {}/{})", video.id, videos.iter().position(|v| v.id == video.id).unwrap() + 1, videos.len());
+    println!("  Canal: {}", video.channel);
+    println!();
+
+    // Load state
+    let state_path = get_state_path()?;
+    let mut state = load_state(&state_path);
+
+    // Build valid folder list for the AI
+    let mut valid_folders = vec![
+        "Learn".into(),
+        "Ideas".into(),
+        "Resources".into(),
+        "Health".into(),
+        "Things".into(),
+        "Resources/YouTube".into(),
+    ];
+    for folder in cfg.output.category_folders.values() {
+        if !valid_folders.contains(folder) {
+            valid_folders.push(folder.clone());
+        }
+    }
+
+    let proc = processor::Processor::new(
+        cfg.processing
+            .llm_base_url
+            .as_deref()
+            .context("llm_base_url not set in config")?,
+        cfg.processing
+            .llm_model
+            .as_deref()
+            .context("llm_model not set in config")?,
+        cfg.processing
+            .llm_api_key
+            .as_deref()
+            .unwrap_or(""),
+        valid_folders,
+    );
+
+    // Resolve yt-dlp path and storage config
+    let yt_dlp_path = cfg.yt_dlp_path();
+    let videos_dir = cfg.videos_dir()?;
+    let quality = cfg.video_quality().to_string();
+    let subtitle_langs: Vec<&str> = cfg
+        .storage
+        .subtitle_langs
+        .as_deref()
+        .unwrap_or("en,es,es-419,en-US")
+        .split(',')
+        .map(|s| s.trim())
+        .collect();
+
+    // Download video + subtitles
+    log::info!("  📥 Descargando video {}...", video.id);
+    let transcript_result = transcript::get_transcript(
+        &yt_dlp_path,
+        &video.id,
+        &videos_dir,
+        &quality,
+        &subtitle_langs,
+    )
+    .await?;
+
+    // AI processing
+    match proc.process(video, transcript_result.text.as_deref()).await {
+        Ok(mut processed) => {
+            // Set local video path
+            processed.local_video_path = transcript_result
+                .video_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+
+            // If a Fabric pattern is specified, run the second phase
+            if let Some(ref pattern_name) = pattern {
+                let patterns_dir = format!(
+                    "{}/.config/fabric/patterns",
+                    std::env::var("HOME").unwrap_or_default()
+                );
+
+                match proc
+                    .process_with_pattern(
+                        video,
+                        transcript_result.text.as_deref(),
+                        pattern_name,
+                        &patterns_dir,
+                    )
+                    .await
+                {
+                    Ok(fabric_output) => {
+                        processed.fabric_output = Some(fabric_output);
+                        log::info!("  📜 Fabric pattern output stored");
+                    }
+                    Err(e) => {
+                        log::warn!("  ⚠️ Fabric pattern failed: {e}");
+                    }
+                }
+            }
+
+            // Create Obsidian note
+            if let Some(ref vault) = cfg.output.obsidian_vault {
+                let vault_path = PathBuf::from(vault);
+                match obsidian::create_note(&vault_path, &processed) {
+                    Ok(path) => {
+                        log::info!("  📝 Note created: {:?}", path);
+                    }
+                    Err(e) => {
+                        log::error!("  ❌ Failed to create note: {e}");
+                    }
+                }
+            }
+
+            // Mark as processed
+            state.mark_processed(video.id.clone());
+            save_state(&state_path, &state)?;
+
+            // Print report
+            println!("══════════════════════════════════════════════════════");
+            println!("  ✅ PROCESAMIENTO EXITOSO");
+            println!("══════════════════════════════════════════════════════");
+            println!("  📝  Categoría: {}", processed.target_folder);
+            println!("  🔗  https://youtube.com/watch?v={}", video.id);
+            println!("  🏷️  {}", processed.classification.tags.join(", "));
+            println!("  💡  {}", processed.classification.suggested_action);
+            println!();
+            println!("  Resumen:");
+            for line in processed.summary.lines() {
+                println!("    {}", line);
+            }
+            println!();
+            println!("══════════════════════════════════════════════════════");
+        }
+        Err(e) => {
+            log::error!("  ❌ Failed to process '{}': {e}", video.title);
+            anyhow::bail!("Processing failed: {e}");
+        }
+    }
+
     Ok(())
 }

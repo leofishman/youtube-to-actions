@@ -45,6 +45,7 @@ pub async fn download_video(
             "--write-auto-subs",
             &sub_langs_arg,
             "--skip-download",
+            "--sleep-requests", "3",
             "--no-warnings",
             "--print", "after_move:filepath",
         ])
@@ -105,6 +106,7 @@ fn download_actual_video(
             "--write-subs",
             "--write-auto-subs",
             &sub_langs_arg,
+            "--sleep-requests", "3",
             "--no-warnings",
             "--print", "after_move:filepath",
         ])

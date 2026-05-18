@@ -31,13 +31,24 @@ pub enum VideoCategory {
     Health,
     Other(String),
 }
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// Suggested action from AI analysis
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum SuggestedAction {
     WatchFull,
     ReadTranscript,
     SaveForLater,
     Archive,
+}
+
+impl std::fmt::Display for SuggestedAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SuggestedAction::WatchFull => write!(f, "Ver completo"),
+            SuggestedAction::ReadTranscript => write!(f, "Leer resumen"),
+            SuggestedAction::SaveForLater => write!(f, "Guardar para después"),
+            SuggestedAction::Archive => write!(f, "Archivar"),
+        }
+    }
 }
 
 /// A processed video ready to create tasks/notes from
