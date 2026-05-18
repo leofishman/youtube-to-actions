@@ -77,7 +77,9 @@ pub async fn download_video(
         None
     };
 
-    log::info!("  📥 Video stored in: {:?}", video_dir);
+    if download_video_flag {
+        log::info!("  📥 Video stored in: {:?}", video_dir);
+    }
 
     Ok(DownloadResult {
         video_dir,

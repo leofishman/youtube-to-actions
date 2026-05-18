@@ -222,7 +222,11 @@ async fn cmd_run(
         log::info!("Processing: {}", video.title);
 
         // Step 1: Download video + subtitles locally via yt-dlp
-        log::info!("  📥 Downloading video {}...", video.id);
+        if download_video_flag {
+            log::info!("  📥 Downloading video {}...", video.id);
+        } else {
+            log::info!("  📥 Fetching transcript for {}...", video.id);
+        }
         let transcript_result = downloader::download_video(
             &yt_dlp_path,
             &video.id,
@@ -777,7 +781,11 @@ async fn cmd_process(
         .collect();
 
     // Download video + subtitles
-    log::info!("  📥 Descargando video {}...", video.id);
+    if download_video_flag {
+        log::info!("  📥 Descargando video {}...", video.id);
+    } else {
+        log::info!("  📥 Obteniendo transcripción para {}...", video.id);
+    }
     let transcript_result = downloader::download_video(
         &yt_dlp_path,
         &video.id,

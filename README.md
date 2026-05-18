@@ -2,7 +2,7 @@
 
 Watch a **private YouTube playlist**, process new videos with AI, and automatically create:
 
-- 📝 **Notes in Obsidian vault** — AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on the actual video content
+- 📝 **Notes in Obsidian vault** — AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on video content. Filenames are SEO-friendly slugs, while the original title is preserved inside the note.
 - ✅ Optionally: **Tasks in Super Productivity** (configurable)
 
 Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in background via cron.
@@ -11,10 +11,12 @@ Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in b
 
 - 🧠 **AI classification** — analyzes title + description + transcript to categorize each video
 - 📁 **Smart folder routing** — AI picks the Obsidian folder, with case-insensitive fallback
+- 🔗 **Clean Filenames** — automatically generates slugs for filenames (e.g., `mi-video-interesante.md`) while keeping the full YouTube title in the metadata and header.
 - 🎨 **Fabric patterns** — optional deep analysis via community Fabric patterns (`--pattern extract_wisdom`)
 - 📋 **Final report** — detailed summary of what was processed and where it was saved
 - 🔄 **Playlist cleanup** — optionally move processed videos to a second playlist
 - 🏷️ **Auto-tagging** — relevant keywords extracted from the content
+- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yaydl`.
 - 💾 **State tracking** — only processes new videos (use `--force` to reprocess)
 
 ## Quick Start
@@ -53,6 +55,7 @@ sudo cp target/release/yt2action /usr/local/bin/
 | **Google Cloud project** | OAuth 2.0 access to your private YouTube playlists | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials → Create OAuth client ID (Desktop App) |
 | **`credentials.json`** | OAuth client secret — place in project root | Downloaded during OAuth client creation above |
 | **YouTube Data API v3** | Must be enabled for your project | [Enable here](https://console.cloud.google.com/apis/library/youtube.googleapis.com) |
+| **ytt & yaydl** | Transcript extraction and video downloading | Install via your package manager or GitHub |
 | **Super Productivity** | Receives tasks via Local REST API | Settings → Misc → **Enable local REST API** (port 3876) |
 | **LLM server** | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below |
 | **Obsidian vault** (optional) | Notes are sorted into folders by theme | Set `obsidian_vault` in config |
@@ -197,12 +200,12 @@ You add video to private playlist 📥
 yt2action run
         │
        ├── YouTube Data API v3 → fetch playlist (OAuth2)
-       ├── yt-dlp → download video + subtitles (almacenamiento local)
-       ├── Parse .vtt/.srt → extract transcript
+       ├── ytt → fetch transcript (saves to local transcript.txt)
+       ├── yaydl → optionally download video (local storage)
        ├── Phase 1: AI classification → category + folder + tags
         │     (or via Fabric pattern if --pattern is set)
         └── Actions:
-            ├── 📝 Obsidian: note in AI-chosen folder
+            ├── 📝 Obsidian: note in AI-chosen folder (slugified filename)
             ├── ✅ Optional: SP task
             └── 🔄 Optional: move to processed playlist
 ```
@@ -240,7 +243,7 @@ src/
 ├── config.rs       → TOML config loader
 ├── types.rs        → Video, ProcessedVideo, Classification, ProcessResult
 ├── youtube.rs      → YouTube Data API v3 + OAuth2 + playlist management
-├── transcript.rs   → CC transcript fetcher
+├── downloader.rs   → Transcript (ytt) and Video (yaydl) manager
 ├── processor.rs    → LLM client (OpenAI-compatible) + Fabric pattern support
 ├── sp_api.rs       → Super Productivity REST API client
 └── obsidian.rs     → Markdown note writer for Obsidian vault

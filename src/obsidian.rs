@@ -8,8 +8,7 @@ pub fn create_note(
     processed: &ProcessedVideo,
 ) -> Result<std::path::PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let slug = slugify(&processed.video.title);
-    let filename = format!("{slug} - {date}.md");
+    let filename = format!("{}.md", slugify(&processed.video.title));
     let dir = vault_path.join(&processed.target_folder);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create directory: {:?}", dir))?;
@@ -30,9 +29,12 @@ pub fn create_note(
         .map(|p| format!("**Video local:** `{}`", p))
         .unwrap_or_default();
 
+    // Escape title for YAML (replace " with \")
+    let escaped_title = processed.video.title.replace('"', "\\\"");
+
     let mut content = format!(
         r#"---
-title: "{title}"
+title: "{escaped_title}"
 url: https://youtube.com/watch?v={id}
 channel: "{channel}"
 duration: {duration}
@@ -58,6 +60,7 @@ tags: [{tags}]
 
 {key_points}
 "#,
+        escaped_title = escaped_title,
         title = processed.video.title,
         id = processed.video.id,
         channel = processed.video.channel,
@@ -89,8 +92,13 @@ tags: [{tags}]
 
     // Transcript section
     let transcript_text = match processed.transcript.as_ref() {
-        Some(t) => t.as_str(),
-        None => "No disponible — el video no tenía subtítulos.",
+        Some(t) => t
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => "No disponible — el video no tenía subtítulos.".to_string(),
     };
 
     content.push_str(&format!("\n## Transcripción\n\n{}\n", transcript_text));
@@ -107,11 +115,13 @@ fn slugify(title: &str) -> String {
         .to_lowercase()
         .chars()
         .map(|c| match c {
-            'a'..='z' | '0'..='9' | '-' | '_' => c,
-            ' ' | '/' | '\\' | ':' | '.' | ',' | '!' | '?' => '-',
+            'a'..='z' | '0'..='9' => c,
+            'á' | 'é' | 'í' | 'ó' | 'ú' | 'ñ' => c, // keep common spanish chars
             _ => '-',
         })
         .collect::<String>()
-        .trim_matches('-')
-        .to_string()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
