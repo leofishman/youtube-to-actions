@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Result of downloading a video
 pub struct DownloadResult {
@@ -23,7 +23,7 @@ pub struct DownloadResult {
 pub async fn download_video(
     yt_dlp_path: &str,
     video_id: &str,
-    videos_dir: &PathBuf,
+    videos_dir: &Path,
     quality: &str,
     subtitle_langs: &[&str],
 ) -> Result<DownloadResult> {
@@ -36,20 +36,21 @@ pub async fn download_video(
 
     // Build subtitle language argument
     let langs = subtitle_langs.join(",");
+    let sub_langs_arg = format!("--sub-langs={}", langs);
 
     // Step 1: Download subtitles only (fast path)
     let sub_output = std::process::Command::new(yt_dlp_path)
         .args([
             "--write-subs",
             "--write-auto-subs",
-            &format!("--sub-langs={}", langs),
+            &sub_langs_arg,
             "--skip-download",
             "--no-warnings",
-            "--print", "after_move:filepath",  // print subtitle file paths
+            "--print", "after_move:filepath",
         ])
         .arg("-o")
         .arg(&output_str)
-        .arg(&format!("https://www.youtube.com/watch?v={}", video_id))
+        .arg(format!("https://www.youtube.com/watch?v={}", video_id))
         .output()
         .context("Failed to execute yt-dlp for subtitles")?;
 
@@ -89,50 +90,54 @@ pub async fn download_video(
 fn download_actual_video(
     yt_dlp_path: &str,
     video_id: &str,
-    video_dir: &PathBuf,
+    video_dir: &Path,
     quality: &str,
     subtitle_langs: &[&str],
 ) -> Option<PathBuf> {
     let output_template = video_dir.join("%(id)s.%(ext)s");
     let output_str = output_template.to_string_lossy().to_string();
     let langs = subtitle_langs.join(",");
+    let sub_langs_arg = format!("--sub-langs={}", langs);
 
     let result = std::process::Command::new(yt_dlp_path)
         .args([
             "-f", quality,
             "--write-subs",
             "--write-auto-subs",
-            &format!("--sub-langs={}", langs),
+            &sub_langs_arg,
             "--no-warnings",
             "--print", "after_move:filepath",
         ])
         .arg("-o")
         .arg(&output_str)
-        .arg(&format!("https://www.youtube.com/watch?v={}", video_id))
+        .arg(format!("https://www.youtube.com/watch?v={}", video_id))
         .output();
 
     match result {
-        Ok(output) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                log::warn!("yt-dlp video download returned {}: {}", output.status, stderr.trim());
-                return None;
-            }
+        Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // The last non-empty line is typically the video file path
-            let path = stdout
+            stdout
                 .lines()
-                .filter_map(|l| {
+                .rev()
+                .find_map(|l| {
                     let trimmed = l.trim();
-                    if trimmed.is_empty() || trimmed.ends_with(".vtt") || trimmed.ends_with(".srt") || trimmed.ends_with(".ttml") {
+                    if trimmed.is_empty()
+                        || trimmed.ends_with(".vtt")
+                        || trimmed.ends_with(".srt")
+                        || trimmed.ends_with(".ttml")
+                    {
                         None
                     } else {
-                        Some(PathBuf::from(trimmed))
+                        let p = PathBuf::from(trimmed);
+                        if p.exists() { Some(p) } else { None }
                     }
                 })
-                .last()
-                .filter(|p| p.exists());
-            path
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!("yt-dlp video download returned {}: {}", output.status, stderr.trim());
+            None
         }
         Err(e) => {
             log::warn!("Failed to run yt-dlp for video download: {}", e);
@@ -142,7 +147,7 @@ fn download_actual_video(
 }
 
 /// Find the best subtitle file in the video directory
-fn find_best_subtitle(dir: &PathBuf, preferred_langs: &[&str]) -> Option<PathBuf> {
+fn find_best_subtitle(dir: &Path, preferred_langs: &[&str]) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
 
     let mut candidates: Vec<(PathBuf, bool, usize)> = Vec::new();
@@ -154,10 +159,7 @@ fn find_best_subtitle(dir: &PathBuf, preferred_langs: &[&str]) -> Option<PathBuf
             if ext_str == "vtt" || ext_str == "srt" {
                 let fname = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 let is_auto = fname.contains(".en") || preferred_langs.iter().any(|l| fname.contains(l));
-
-                // Score: prefer manual over auto, prefer earlier languages in the list
                 let score = preferred_langs.iter().position(|l| fname.contains(l)).unwrap_or(999);
-
                 candidates.push((path, is_auto, score));
             }
         }
@@ -170,7 +172,7 @@ fn find_best_subtitle(dir: &PathBuf, preferred_langs: &[&str]) -> Option<PathBuf
 }
 
 /// Parse a VTT or SRT subtitle file into plain text
-pub fn parse_vtt_or_srt(path: &PathBuf) -> Result<String> {
+pub fn parse_vtt_or_srt(path: &Path) -> Result<String> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read subtitle file: {:?}", path))?;
 
@@ -193,7 +195,6 @@ fn parse_webvtt(content: &str) -> Result<String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Skip headers, empty lines, timestamps, and formatting lines
         if trimmed.is_empty()
             || trimmed.starts_with("WEBVTT")
             || trimmed.starts_with("Kind:")
@@ -206,17 +207,14 @@ fn parse_webvtt(content: &str) -> Result<String> {
             continue;
         }
 
-        // Skip lines that are just timestamps
         if trimmed.contains("-->") {
             continue;
         }
 
-        // Handle subtitle positioning WEBVTT cues like "00:00:01.360"
         if trimmed.len() <= 12 && trimmed.chars().any(|c| c == ':') && trimmed.chars().any(|c| c == '.') {
             continue;
         }
 
-        // Clean HTML tags if any
         let cleaned = trimmed
             .replace("<c>", "")
             .replace("</c>", "")
@@ -231,10 +229,7 @@ fn parse_webvtt(content: &str) -> Result<String> {
         lines.push(cleaned);
     }
 
-    // Join and clean up
     let text = lines.join(" ");
-
-    // Collapse multiple spaces
     let collapsed: String = text
         .chars()
         .fold(String::with_capacity(text.len()), |mut acc, c| {
@@ -256,7 +251,6 @@ fn parse_srt(content: &str) -> Result<String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Skip sequence numbers, timestamps, empty lines
         if trimmed.is_empty()
             || trimmed.chars().all(|c| c.is_ascii_digit())
             || trimmed.contains("-->")
@@ -269,7 +263,6 @@ fn parse_srt(content: &str) -> Result<String> {
     }
 
     let text = lines.join(" ");
-    // Collapse multiple spaces
     let collapsed: String = text
         .chars()
         .fold(String::with_capacity(text.len()), |mut acc, c| {

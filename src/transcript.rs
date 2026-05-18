@@ -27,7 +27,7 @@ pub struct TranscriptResult {
 pub async fn get_transcript(
     yt_dlp_path: &str,
     video_id: &str,
-    videos_dir: &PathBuf,
+    videos_dir: &std::path::Path,
     quality: &str,
     subtitle_langs: &[&str],
 ) -> Result<TranscriptResult> {
