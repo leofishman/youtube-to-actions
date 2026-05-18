@@ -50,6 +50,8 @@ pub struct ProcessedVideo {
     pub classification: Classification,
     /// Vault folder suggested by the AI based on video content
     pub target_folder: String,
+    /// Path to the local video file (e.g. ~/Videos/yt2action/<id>/...)
+    pub local_video_path: Option<String>,
     /// Optional rich analysis from a Fabric pattern
     pub fabric_output: Option<String>,
 }

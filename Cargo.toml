@@ -42,4 +42,3 @@ log = "0.4"
 # Config file parsing
 toml = "0.8"
 directories = "6"
-yt-transcript-rs = "0.1.8"

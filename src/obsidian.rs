@@ -1,12 +1,12 @@
 use crate::types::ProcessedVideo;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Create an Obsidian note from a processed video, placed in the folder chosen by the AI
 pub fn create_note(
-    vault_path: &PathBuf,
+    vault_path: &Path,
     processed: &ProcessedVideo,
-) -> Result<PathBuf> {
+) -> Result<std::path::PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let slug = slugify(&processed.video.title);
     let filename = format!("{slug} - {date}.md");
@@ -22,6 +22,15 @@ pub fn create_note(
         Some(s) => format!("{}s", s),
         None => "unknown".to_string(),
     };
+
+    // Build local video link (Obsidian-compatible file:// or markdown link)
+    let local_link = processed
+        .local_video_path
+        .as_ref()
+        .map(|p| format!("**Video local:** `{}`", p))
+        .unwrap_or_default();
+
+    let has_transcript = processed.transcript.is_some();
 
     let mut content = format!(
         r#"---
@@ -39,6 +48,7 @@ tags: [{tags}]
 **Canal:** {channel}
 **Duración:** {duration}
 **Link:** https://youtube.com/watch?v={id}
+{local_link}
 
 ## Resumen
 
@@ -61,6 +71,7 @@ tags: [{tags}]
             .map(|t| format!("\"{}\"", t))
             .collect::<Vec<_>>()
             .join(", "),
+        local_link = local_link,
         summary = processed.summary,
         key_points = processed
             .key_points
@@ -72,17 +83,17 @@ tags: [{tags}]
 
     // Append Fabric pattern analysis if available
     if let Some(ref fabric_output) = processed.fabric_output {
-        // Clean up fabric output — remove the INPUT: marker if present
         let cleaned = fabric_output.replace("INPUT:\n", "").replace("INPUT:", "");
         content.push_str(&format!("\n## Análisis Profundo\n\n{cleaned}\n"));
     }
 
     // Transcript section
     content.push_str(&format!(
-        "\n## Transcripción\n\n> {}\n",
-        match processed.transcript {
-            Some(_) => "Disponible en el procesamiento original.",
-            None => "No disponible para este video.",
+        "\n## Transcripción\n\n{}\n",
+        if has_transcript {
+            "Disponible en el directorio del video local (archivos .vtt/.srt)."
+        } else {
+            "No disponible — el video no tenía subtítulos."
         }
     ));
 

@@ -197,8 +197,9 @@ You add video to private playlist 📥
 yt2action run
         │
        ├── YouTube Data API v3 → fetch playlist (OAuth2)
-        ├── yt-transcript-rs → get CC captions (InnerTube API)
-        ├── Phase 1: AI classification → category + folder + tags
+       ├── yt-dlp → download video + subtitles (almacenamiento local)
+       ├── Parse .vtt/.srt → extract transcript
+       ├── Phase 1: AI classification → category + folder + tags
         │     (or via Fabric pattern if --pattern is set)
         └── Actions:
             ├── 📝 Obsidian: note in AI-chosen folder

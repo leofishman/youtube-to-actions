@@ -8,6 +8,8 @@ pub struct Config {
     pub youtube: YoutubeConfig,
     pub processing: ProcessingConfig,
     pub output: OutputConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +51,34 @@ pub struct OutputConfig {
     pub category_folders: std::collections::HashMap<String, String>,
 }
 
+/// Local storage configuration for downloaded videos
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Directory to store downloaded videos (default: ~/Videos/yt2action)
+    pub videos_dir: Option<String>,
+    /// Video quality for yt-dlp (e.g. "worst", "best", "best[height<=1080]")
+    /// Default: "worst" since we only need audio for transcription
+    pub quality: Option<String>,
+    /// Path to yt-dlp binary
+    pub yt_dlp_path: Option<String>,
+    /// Whether to keep subtitle files alongside the video
+    pub keep_subtitles: Option<bool>,
+    /// Preferred subtitle languages (comma-separated, e.g. "en,es,es-419")
+    pub subtitle_langs: Option<String>,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            videos_dir: None,
+            quality: Some("worst".to_string()),
+            yt_dlp_path: None,
+            keep_subtitles: Some(true),
+            subtitle_langs: Some("en,es,es-419,en-US".to_string()),
+        }
+    }
+}
+
 impl Config {
     /// Load config from a TOML file, with defaults for optional fields
     pub fn from_file(path: &PathBuf) -> Result<Self> {
@@ -63,19 +93,50 @@ impl Config {
         cfg.output.sp_tag_dev = cfg.output.sp_tag_dev.or(Some("dev".into()));
 
         // Resolve credentials path relative to config file location if relative
-        if let Some(ref creds) = cfg.youtube.credentials_path {
-            if !PathBuf::from(creds).is_absolute() {
-                if let Some(config_dir) = path.parent() {
-                    let resolved = config_dir.join(creds);
-                    if resolved.exists() {
-                        cfg.youtube.credentials_path =
-                            Some(resolved.to_string_lossy().to_string());
-                    }
-                }
+        if let Some(ref creds) = cfg.youtube.credentials_path
+            && !PathBuf::from(creds).is_absolute()
+            && let Some(config_dir) = path.parent()
+        {
+            let resolved = config_dir.join(creds);
+            if resolved.exists() {
+                cfg.youtube.credentials_path =
+                    Some(resolved.to_string_lossy().to_string());
             }
         }
 
         Ok(cfg)
+    }
+
+    /// Get resolved videos directory
+    pub fn videos_dir(&self) -> Result<PathBuf> {
+        let dir = self
+            .storage
+            .videos_dir
+            .clone()
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                format!("{}/Videos/yt2action", home)
+            });
+        let path = PathBuf::from(dir);
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("Failed to create videos dir: {:?}", path))?;
+        Ok(path)
+    }
+
+    /// Get path to yt-dlp binary
+    pub fn yt_dlp_path(&self) -> String {
+        self.storage
+            .yt_dlp_path
+            .clone()
+            .unwrap_or_else(|| "yt-dlp".to_string())
+    }
+
+    /// Get video quality
+    pub fn video_quality(&self) -> &str {
+        self.storage
+            .quality
+            .as_deref()
+            .unwrap_or("worst")
     }
 
     /// Default config path: ~/.config/yt2action/config.toml

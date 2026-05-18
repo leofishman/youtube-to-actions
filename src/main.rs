@@ -1,4 +1,5 @@
 mod config;
+mod downloader;
 mod obsidian;
 mod processor;
 mod sp_api;
@@ -178,18 +179,45 @@ async fn cmd_run(
         valid_folders,
     );
 
+    // Resolve yt-dlp path and storage config
+    let yt_dlp_path = cfg.yt_dlp_path();
+    let videos_dir = cfg.videos_dir()?;
+    let quality = cfg.video_quality().to_string();
+    let subtitle_langs: Vec<&str> = cfg
+        .storage
+        .subtitle_langs
+        .as_deref()
+        .unwrap_or("en,es,es-419,en-US")
+        .split(',')
+        .map(|s| s.trim())
+        .collect();
+
     // Track results for the final report
     let mut results: Vec<ProcessResult> = Vec::new();
 
     for video in &to_process {
         log::info!("Processing: {}", video.title);
 
-        // Get transcript
-        let transcript = transcript::get_transcript(&video.id, false).await?;
+        // Step 1: Download video + subtitles locally via yt-dlp
+        log::info!("  📥 Downloading video {}...", video.id);
+        let transcript_result = transcript::get_transcript(
+            &yt_dlp_path,
+            &video.id,
+            &videos_dir,
+            &quality,
+            &subtitle_langs,
+        )
+        .await?;
 
-        // AI processing
-        match proc.process(video, transcript.as_deref()).await {
+        // Step 2: AI processing
+        match proc.process(video, transcript_result.text.as_deref()).await {
             Ok(mut processed) => {
+                // Set local video path
+                processed.local_video_path = transcript_result
+                    .video_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string());
+
                 // If a Fabric pattern is specified, run the second phase
                 if let Some(ref pattern_name) = pattern {
                     let patterns_dir = format!(
@@ -200,7 +228,7 @@ async fn cmd_run(
                     match proc
                         .process_with_pattern(
                             video,
-                            transcript.as_deref(),
+                            transcript_result.text.as_deref(),
                             pattern_name,
                             &patterns_dir,
                         )
@@ -529,6 +557,20 @@ llm_model = "llama3.2"
 
 # API key (opcional — llama.cpp no necesita)
 # llm_api_key = "sk-..."
+
+[storage]
+# Directorio para almacenar videos descargados localmente
+# Se crea automáticamente si no existe
+# videos_dir = "~/Videos/yt2action"
+
+# Calidad del video (por defecto "worst" — solo necesitamos audio para transcripción)
+# quality = "worst"
+
+# Ruta al binario yt-dlp (si no está en PATH)
+# yt_dlp_path = "yt-dlp"
+
+# Idiomas de subtítulos preferidos
+# subtitle_langs = "en,es,es-419,en-US"
 
 [output]
 # Obsidian vault — notes go to Learn/, Ideas/, Resources/ etc. (automatically)

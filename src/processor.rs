@@ -62,6 +62,7 @@ impl Processor {
             key_points: parsed.key_points,
             classification: parsed.classification,
             target_folder: parsed.target_folder,
+            local_video_path: None,
             fabric_output: None,
         })
     }
