@@ -3,7 +3,6 @@ mod downloader;
 mod obsidian;
 mod processor;
 mod sp_api;
-mod transcript;
 mod types;
 mod youtube;
 
@@ -214,7 +213,7 @@ async fn cmd_run(
 
         // Step 1: Download video + subtitles locally via yt-dlp
         log::info!("  📥 Downloading video {}...", video.id);
-        let transcript_result = transcript::get_transcript(
+        let transcript_result = downloader::download_video(
             &yt_dlp_path,
             &video.id,
             &videos_dir,
@@ -224,7 +223,7 @@ async fn cmd_run(
         .await?;
 
         // Step 2: AI processing
-        match proc.process(video, transcript_result.text.as_deref()).await {
+        match proc.process(video, transcript_result.transcript.as_deref()).await {
             Ok(mut processed) => {
                 // Set local video path
                 processed.local_video_path = transcript_result
@@ -242,7 +241,7 @@ async fn cmd_run(
                     match proc
                         .process_with_pattern(
                             video,
-                            transcript_result.text.as_deref(),
+                            transcript_result.transcript.as_deref(),
                             pattern_name,
                             &patterns_dir,
                         )
@@ -767,7 +766,7 @@ async fn cmd_process(
 
     // Download video + subtitles
     log::info!("  📥 Descargando video {}...", video.id);
-    let transcript_result = transcript::get_transcript(
+    let transcript_result = downloader::download_video(
         &yt_dlp_path,
         &video.id,
         &videos_dir,
@@ -776,14 +775,14 @@ async fn cmd_process(
     )
     .await?;
 
-    // AI processing
-    match proc.process(video, transcript_result.text.as_deref()).await {
-        Ok(mut processed) => {
-            // Set local video path
-            processed.local_video_path = transcript_result
-                .video_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string());
+  // AI processing
+        match proc.process(video, transcript_result.transcript.as_deref()).await {
+            Ok(mut processed) => {
+                // Set local video path
+                processed.local_video_path = transcript_result
+                    .video_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string());
 
             // If a Fabric pattern is specified, run the second phase
             if let Some(ref pattern_name) = pattern {
@@ -795,7 +794,7 @@ async fn cmd_process(
                 match proc
                     .process_with_pattern(
                         video,
-                        transcript_result.text.as_deref(),
+                        transcript_result.transcript.as_deref(),
                         pattern_name,
                         &patterns_dir,
                     )
