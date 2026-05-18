@@ -45,3 +45,11 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 *   **Descripción:** Durante el desarrollo, guardar las salidas crudas de cada patrón de Fabric que se ejecuta en un archivo de log temporal (por ejemplo, en `target/fabric_outputs_temp.log` o un directorio de logs) para poder inspeccionar los resultados de cada análisis sin tener que esperar a que se cree la nota de Obsidian o en caso de que ocurra algún fallo intermedio.
 *   **Plan:** Crear una utilidad sencilla que escriba las respuestas del LLM directamente en un archivo log plano inmediatamente después de cada ejecución exitosa de un patrón.
 
+### 8. Optimización de patrones de Fabric para LLM local ⚡ (Para Mañana / Pendiente)
+*   **Descripción:** Documentar o automatizar la optimización de los system prompts de patrones de Fabric pesados (como `extract_wisdom`) para el entorno local. Los system prompts originales exigen una cantidad inmensa de tokens generados, lo que demora más de 7 minutos en modelos locales como Qwen 35B.
+*   **Plan:** 
+    1. Recomendar/documentar la reducción de secciones redundantes de salida (ej. remover "Habits" o "Facts" si no se usan) en `~/.config/fabric/patterns/*/system.md`.
+    2. Documentar la limitación del output en el prompt del sistema (ej. cambiar "Extract all ideas" por "Extract up to 10 key ideas").
+    3. Analizar la viabilidad de proveer un set de "patrones livianos" optimizados para uso local dentro del proyecto.
+
+
