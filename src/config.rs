@@ -16,10 +16,24 @@ pub struct Config {
 pub struct YoutubeConfig {
     /// Path to credentials.json (Google OAuth Desktop app credentials)
     pub credentials_path: Option<String>,
-    /// ID of the private playlist to watch
+    /// ID of the private playlist to watch (legacy/default)
     pub playlist_id: String,
     /// Optional: after processing, move videos to this playlist
     pub processed_playlist_id: Option<String>,
+    /// Multiple playlists with specific patterns and SP settings
+    #[serde(default)]
+    pub playlists: Vec<PlaylistPatternConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistPatternConfig {
+    pub id: String,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Enable SP tasks for this playlist (overrides global sp_enabled)
+    pub sp_enabled: Option<bool>,
+    /// SP project ID for this playlist (overrides global sp_project_id)
+    pub sp_project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

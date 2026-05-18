@@ -9,6 +9,8 @@ Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in b
 
 ## Features
 
+- 📂 **Multiple Playlists** — monitor multiple playlists simultaneously, each with its own processing rules.
+
 - 🧠 **AI classification** — analyzes title + description + transcript to categorize each video
 - 📁 **Smart folder routing** — AI picks the Obsidian folder, with case-insensitive fallback
 - 🔗 **Clean Filenames** — automatically generates slugs for filenames (e.g., `mi-video-interesante.md`) while keeping the full YouTube title in the metadata and header.
@@ -59,6 +61,26 @@ sudo cp target/release/yt2action /usr/local/bin/
 | **Super Productivity** | Receives tasks via Local REST API | Settings → Misc → **Enable local REST API** (port 3876) |
 | **LLM server** | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below |
 | **Obsidian vault** (optional) | Notes are sorted into folders by theme | Set `obsidian_vault` in config |
+
+## Google OAuth Setup
+
+To interact with private YouTube playlists, you need to create a Google Cloud Project and obtain a `credentials.json` file:
+
+1.  **Create a Project**: Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a new project.
+2.  **Enable the API**: Navigate to **APIs & Services > Library** and search for **YouTube Data API v3**. Enable it.
+3.  **Configure Consent Screen**:
+    *   Go to **APIs & Services > OAuth consent screen**.
+    *   Choose **External** user type.
+    *   **Scoping**: Add the `https://www.googleapis.com/auth/youtube` scope (required for reading and moving videos).
+    *   **Test Users**: Since the app won't be "Published", you **MUST** add your email address to the **Test users** list, otherwise you will get a "403 Access Blocked" error during login.
+4.  **Create Credentials**:
+    *   Go to **APIs & Services > Credentials**.
+    *   Click **Create Credentials > OAuth client ID**.
+    *   Select **Desktop App** as the Application Type.
+    *   Download the JSON file and rename it to `credentials.json`.
+    *   Place it in the root of your `yt2action` directory.
+
+> **Tip**: Rust hint for Google OAuth — If you need to refresh tokens frequently, ensure your consent screen is set to "Production" (requires approval) or just re-authenticate if the test token expires after 7 days.
 
 ## Commands
 
@@ -171,6 +193,25 @@ sp_enabled = false
 # [output.category_folders]
 # tutorial = "Knowledge/Tutorials"
 # health = "Wellness"
+
+### Multiple Playlists (Advanced)
+
+You can monitor multiple playlists and assign specific Fabric patterns or Super Productivity projects to each:
+
+```toml
+[[youtube.playlists]]
+id = "PL_work_related_playlist"
+patterns = ["extract_wisdom", "summarize"]
+sp_enabled = true
+sp_project_id = "WORK_PROJECT"
+
+[[youtube.playlists]]
+id = "PL_personal_learning"
+patterns = ["summarize"]
+sp_enabled = false # Override global sp_enabled for this playlist
+```
+
+Playlist-specific settings (`sp_enabled`, `sp_project_id`) override the global defaults in the `[output]` section.
 ```
 
 ### LLM Support

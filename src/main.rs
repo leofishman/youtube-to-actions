@@ -146,30 +146,78 @@ async fn cmd_run(
     let state_path = get_state_path()?;
     let mut state = load_state(&state_path);
 
-    // Filter videos: if force, ignore state; otherwise skip processed
-    let to_process: Vec<_> = if force {
-        videos.iter().take(limit).collect()
-    } else {
-        videos
-            .iter()
-            .filter(|v| !state.is_processed(&v.id))
-            .take(limit)
-            .collect()
+    // Collect playlists to process with their SP settings
+    let playlists_to_process: Vec<_> = {
+        let mut playlists = Vec::new();
+        
+        // Add legacy default playlist if not already configured
+        if !cfg.youtube.playlists.iter().any(|p| p.id == cfg.youtube.playlist_id) {
+            playlists.push((
+                cfg.youtube.playlist_id.clone(),
+                vec![],
+                None, // sp_enabled - use global
+                cfg.output.sp_project_id.clone(), // sp_project_id - use global
+            ));
+        }
+        
+        // Add configured playlists
+        for p in &cfg.youtube.playlists {
+            playlists.push((
+                p.id.clone(),
+                p.patterns.clone(),
+                p.sp_enabled,
+                p.sp_project_id.clone(),
+            ));
+        }
+        
+        playlists
     };
 
-    if to_process.is_empty() {
-        log::info!("No new videos to process.");
-        if videos.len() > 0 && !force {
-            log::info!("Tip: use --force to reprocess already processed videos.");
-        }
-        return Ok(());
+    if playlists_to_process.is_empty() {
+        log::error!("No playlists configured to process.");
+        return Err(anyhow::anyhow!("No playlists configured"));
     }
 
-    log::info!(
-        "Processing {} video{}...",
-        to_process.len(),
-        if to_process.len() == 1 { "" } else { "s" }
-    );
+    // Process each playlist
+    let mut total_processed = 0;
+    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id) in playlists_to_process {
+        if total_processed >= limit {
+            break;
+        }
+
+        log::info!("Processing playlist: {}", playlist_id);
+        
+        // Fetch videos for this playlist
+        let videos = match yt.get_playlist_videos(&playlist_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("Failed to fetch playlist {}: {}", playlist_id, e);
+                continue;
+            }
+        };
+
+        // Filter videos: if force, ignore state; otherwise skip processed
+        let to_process: Vec<_> = if force {
+            videos.iter().take(limit - total_processed).collect()
+        } else {
+            videos
+                .iter()
+                .filter(|v| !state.is_processed(&v.id))
+                .take(limit - total_processed)
+                .collect()
+        };
+
+        if to_process.is_empty() {
+            log::info!("No new videos in playlist {}. Continuing...", playlist_id);
+            continue;
+        }
+
+        log::info!(
+            "Processing {} video{} (playlist: {})...",
+            to_process.len(),
+            if to_process.len() == 1 { "" } else { "s" },
+            playlist_id
+        );
 
     // Build valid folder list for the AI
     let mut valid_folders = vec![
@@ -298,7 +346,12 @@ async fn cmd_run(
                 }
 
                 // Create SP task (optional)
-                if cfg.output.sp_enabled {
+                let sp_enabled = playlist_sp_enabled.unwrap_or(cfg.output.sp_enabled);
+                let project_id = playlist_project_id
+                    .or_else(|| cfg.output.sp_project_id.clone())
+                    .unwrap_or_else(|| "INBOX_PROJECT".to_string());
+                
+                if sp_enabled {
                     let title = format!("[📺] {}", processed.video.title);
                     let notes = format!(
                         "{}\n\n## Puntos clave\n{}\n\n🔗 https://youtube.com/watch?v={}",
@@ -315,11 +368,7 @@ async fn cmd_run(
                     let task = types::SpTask {
                         title,
                         notes,
-                        project_id: cfg
-                            .output
-                            .sp_project_id
-                            .clone()
-                            .unwrap_or_else(|| "INBOX_PROJECT".to_string()),
+                        project_id,
                         tag_ids: processed.classification.tags.clone(),
                     };
 
@@ -384,6 +433,10 @@ async fn cmd_run(
                     error: Some(e.to_string()),
                 });
             }
+        }
+    }
+
+        total_processed += to_process.len();
         }
     }
 
