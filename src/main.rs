@@ -185,7 +185,7 @@ async fn cmd_run(
         log::info!("Processing: {}", video.title);
 
         // Get transcript
-        let transcript = transcript::get_transcript(&video.id).await?;
+        let transcript = transcript::get_transcript(&video.id, false).await?;
 
         // AI processing
         match proc.process(video, transcript.as_deref()).await {

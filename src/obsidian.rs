@@ -9,7 +9,7 @@ pub fn create_note(
 ) -> Result<PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let slug = slugify(&processed.video.title);
-    let filename = format!("{date} - {slug}.md");
+    let filename = format!("{slug} - {date}.md");
     let dir = vault_path.join(&processed.target_folder);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create directory: {:?}", dir))?;

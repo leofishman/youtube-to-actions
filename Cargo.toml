@@ -32,9 +32,6 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 # OAuth2 for YouTube API (Desktop app flow)
 yup-oauth2 = { version = "12", features = ["hyper-rustls"] }
 
-# YouTube transcript fetching
-youtube-transcript = "0.3"
-
 # URL parsing
 url = "2"
 
@@ -45,3 +42,4 @@ log = "0.4"
 # Config file parsing
 toml = "0.8"
 directories = "6"
+yt-transcript-rs = "0.1.8"

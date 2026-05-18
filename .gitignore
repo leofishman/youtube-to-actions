@@ -4,3 +4,6 @@
 credentials.json
 token_cache.json
 state.json
+
+# Large Fabric binary — download from releases when needed
+fabric

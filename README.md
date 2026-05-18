@@ -196,8 +196,8 @@ You add video to private playlist 📥
         ▼ (via cron or manual)
 yt2action run
         │
-        ├── YouTube OAuth → fetch playlist
-        ├── youtube-transcript → get CC captions
+       ├── YouTube Data API v3 → fetch playlist (OAuth2)
+        ├── yt-transcript-rs → get CC captions (InnerTube API)
         ├── Phase 1: AI classification → category + folder + tags
         │     (or via Fabric pattern if --pattern is set)
         └── Actions:
