@@ -150,8 +150,8 @@ async fn cmd_run(
     let playlists_to_process: Vec<_> = {
         let mut playlists = Vec::new();
         
-        // Add legacy default playlist if not already configured
-        if !cfg.youtube.playlists.iter().any(|p| p.id == cfg.youtube.playlist_id) {
+        // Add legacy default playlist if no other playlists are configured
+        if cfg.youtube.playlists.is_empty() {
             playlists.push((
                 cfg.youtube.playlist_id.clone(),
                 vec![],
@@ -177,6 +177,9 @@ async fn cmd_run(
         log::error!("No playlists configured to process.");
         return Err(anyhow::anyhow!("No playlists configured"));
     }
+
+    // Track results for the final report
+    let mut results: Vec<ProcessResult> = Vec::new();
 
     // Process each playlist
     let mut total_processed = 0;
@@ -263,8 +266,7 @@ async fn cmd_run(
         .map(|s| s.trim())
         .collect();
 
-    // Track results for the final report
-    let mut results: Vec<ProcessResult> = Vec::new();
+
 
     for video in &to_process {
         log::info!("Processing: {}", video.title);
@@ -295,11 +297,18 @@ async fn cmd_run(
                     .map(|p| p.to_string_lossy().to_string());
 
                 // If a Fabric pattern is specified, run the second phase
-                if let Some(ref pattern_name) = pattern {
+                let patterns_to_run = if let Some(ref cli_pattern) = pattern {
+                    vec![cli_pattern.clone()]
+                } else {
+                    playlist_patterns.clone()
+                };
+
+                for pattern_name in &patterns_to_run {
                     let patterns_dir = format!(
                         "{}/.config/fabric/patterns",
                         std::env::var("HOME").unwrap_or_default()
                     );
+                    log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
 
                     match proc
                         .process_with_pattern(
@@ -311,7 +320,13 @@ async fn cmd_run(
                         .await
                     {
                         Ok(fabric_output) => {
-                            processed.fabric_output = Some(fabric_output);
+                            if processed.fabric_output.is_none() {
+                                processed.fabric_output = Some(fabric_output);
+                            } else {
+                                let mut current = processed.fabric_output.take().unwrap();
+                                current.push_str(&format!("\n\n---\n\n# Patrón: {}\n\n{}", pattern_name, fabric_output));
+                                processed.fabric_output = Some(current);
+                            }
                             log::info!("  📜 Fabric pattern output stored");
                         }
                         Err(e) => {
@@ -348,6 +363,7 @@ async fn cmd_run(
                 // Create SP task (optional)
                 let sp_enabled = playlist_sp_enabled.unwrap_or(cfg.output.sp_enabled);
                 let project_id = playlist_project_id
+                    .clone()
                     .or_else(|| cfg.output.sp_project_id.clone())
                     .unwrap_or_else(|| "INBOX_PROJECT".to_string());
                 
@@ -437,7 +453,6 @@ async fn cmd_run(
     }
 
         total_processed += to_process.len();
-        }
     }
 
     // Save state (only for videos not moved to another playlist)
@@ -864,6 +879,7 @@ async fn cmd_process(
                     "{}/.config/fabric/patterns",
                     std::env::var("HOME").unwrap_or_default()
                 );
+                log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
 
                 match proc
                     .process_with_pattern(

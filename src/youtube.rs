@@ -111,6 +111,10 @@ impl YoutubeClient {
                             .unwrap_or("")
                             .to_string(),
                         duration_seconds: None,
+                        view_count: None,
+                        like_count: None,
+                        dislike_count: None,
+                        comment_count: None,
                     });
                 }
             }
@@ -196,7 +200,7 @@ impl YoutubeClient {
         for chunk in videos.chunks_mut(50) {
             let ids: Vec<&str> = chunk.iter().map(|v| v.id.as_str()).collect();
             let url = format!(
-                "https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id={}",
+                "https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id={}",
                 ids.join(",")
             );
 
@@ -216,8 +220,18 @@ impl YoutubeClient {
                     let d = item["contentDetails"]["duration"]
                         .as_str()
                         .unwrap_or("PT0S");
+                    let stats = &item["statistics"];
+                    let view_count = stats["viewCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+                    let like_count = stats["likeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+                    let dislike_count = stats["dislikeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+                    let comment_count = stats["commentCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+
                     if let Some(v) = chunk.iter_mut().find(|v| v.id == vid) {
                         v.duration_seconds = Some(parse_iso8601_duration(d));
+                        v.view_count = view_count;
+                        v.like_count = like_count;
+                        v.dislike_count = dislike_count;
+                        v.comment_count = comment_count;
                     }
                 }
             }

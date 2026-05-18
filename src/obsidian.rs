@@ -32,15 +32,32 @@ pub fn create_note(
     // Escape title for YAML (replace " with \")
     let escaped_title = processed.video.title.replace('"', "\\\"");
 
+    // Extract published date part (YYYY-MM-DD)
+    let published_at = if processed.video.published_at.len() >= 10 {
+        &processed.video.published_at[..10]
+    } else {
+        &processed.video.published_at
+    };
+
+    let views = processed.video.view_count.unwrap_or(0);
+    let likes = processed.video.like_count.unwrap_or(0);
+    let dislikes = processed.video.dislike_count.unwrap_or(0);
+    let comments = processed.video.comment_count.unwrap_or(0);
+
     let mut content = format!(
         r#"---
 title: "{escaped_title}"
 url: https://youtube.com/watch?v={id}
 channel: "{channel}"
 duration: {duration}
+published: {published_at}
 date_added: {date}
 category: {category}
 tags: [{tags}]
+views: {views}
+likes: {likes}
+dislikes: {dislikes}
+comments: {comments}
 ---
 
 # {title}
@@ -49,7 +66,9 @@ tags: [{tags}]
 
 **Canal:** {channel}
 **Duración:** {duration}
+**Publicado:** {published_at}
 **Link:** https://youtube.com/watch?v={id}
+**Métricas:** {views} vistas | {likes} likes | {comments} comentarios
 {local_link}
 
 ## Resumen
@@ -65,6 +84,7 @@ tags: [{tags}]
         id = processed.video.id,
         channel = processed.video.channel,
         duration = duration,
+        published_at = published_at,
         date = date,
         category = format!("{:?}", processed.classification.category),
         tags = processed
@@ -74,6 +94,10 @@ tags: [{tags}]
             .map(|t| format!("\"{}\"", t))
             .collect::<Vec<_>>()
             .join(", "),
+        views = views,
+        likes = likes,
+        dislikes = dislikes,
+        comments = comments,
         local_link = local_link,
         summary = processed.summary,
         key_points = processed

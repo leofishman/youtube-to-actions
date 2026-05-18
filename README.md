@@ -2,23 +2,23 @@
 
 Watch a **private YouTube playlist**, process new videos with AI, and automatically create:
 
-- 📝 **Notes in Obsidian vault** — AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on video content. Filenames are SEO-friendly slugs, while the original title is preserved inside the note.
-- ✅ Optionally: **Tasks in Super Productivity** (configurable)
+- 📝 **Notes in Obsidian vault** — AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on video content. Filenames are SEO-friendly slugs, while the original title is preserved inside the note. Includes rich metadata: publish date, views, likes, comments, and high-resolution video poster.
+- ✅ Optionally: **Tasks in Super Productivity** (configurable, with per-playlist project targeting)
 
 Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in background via cron.
 
 ## Features
 
-- 📂 **Multiple Playlists** — monitor multiple playlists simultaneously, each with its own processing rules.
-
+- 📂 **Multiple Playlists** — monitor multiple playlists simultaneously, each with its own processing rules, target folder, or SP project.
 - 🧠 **AI classification** — analyzes title + description + transcript to categorize each video
 - 📁 **Smart folder routing** — AI picks the Obsidian folder, with case-insensitive fallback
 - 🔗 **Clean Filenames** — automatically generates slugs for filenames (e.g., `mi-video-interesante.md`) while keeping the full YouTube title in the metadata and header.
-- 🎨 **Fabric patterns** — optional deep analysis via community Fabric patterns (`--pattern extract_wisdom`)
+- 🎨 **Fabric patterns** — optional deep analysis via community Fabric patterns (`--pattern extract_wisdom`). Playlists can run multiple patterns sequentially (e.g. `patterns = ["summarize", "extract_wisdom"]`), concatenating results cleanly in Obsidian.
+- 📊 **Rich Metadata & Stats** — automatically fetches and embeds video stats (views, likes, comments, published date) in the Obsidian note frontmatter and body.
 - 📋 **Final report** — detailed summary of what was processed and where it was saved
 - 🔄 **Playlist cleanup** — optionally move processed videos to a second playlist
 - 🏷️ **Auto-tagging** — relevant keywords extracted from the content
-- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yaydl`.
+- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yaydl` (disabled by default to avoid heavy downloads).
 - 💾 **State tracking** — only processes new videos (use `--force` to reprocess)
 
 ## Quick Start

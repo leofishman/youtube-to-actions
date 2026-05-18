@@ -11,6 +11,10 @@ pub struct Video {
     pub description: String,
     pub published_at: String,
     pub duration_seconds: Option<u64>,
+    pub view_count: Option<u64>,
+    pub like_count: Option<u64>,
+    pub dislike_count: Option<u64>,
+    pub comment_count: Option<u64>,
 }
 
 /// Classification result from AI processing
