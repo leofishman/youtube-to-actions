@@ -38,6 +38,12 @@ pub async fn download_video(
     let langs = subtitle_langs.join(",");
     let sub_langs_arg = format!("--sub-langs={}", langs);
 
+    // JavaScript runtime flags for YouTube (required for format extraction)
+    let js_flags = [
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+    ];
+
     // Step 1: Download subtitles only (fast path)
     let sub_output = std::process::Command::new(yt_dlp_path)
         .args([
@@ -49,6 +55,7 @@ pub async fn download_video(
             "--no-warnings",
             "--print", "after_move:filepath",
         ])
+        .args(&js_flags)
         .arg("-o")
         .arg(&output_str)
         .arg(format!("https://www.youtube.com/watch?v={}", video_id))
@@ -89,27 +96,18 @@ pub async fn download_video(
 
 /// Download the actual video file
 fn download_actual_video(
-    yt_dlp_path: &str,
+    _yt_dlp_path: &str,
     video_id: &str,
     video_dir: &Path,
-    quality: &str,
-    subtitle_langs: &[&str],
+    _quality: &str,
+    _subtitle_langs: &[&str],
 ) -> Option<PathBuf> {
-    let output_template = video_dir.join("%(id)s.%(ext)s");
+    // yaydl outputs mp4 by default if we don't specify only-audio
+    let output_template = video_dir.join(format!("{}.mp4", video_id));
     let output_str = output_template.to_string_lossy().to_string();
-    let langs = subtitle_langs.join(",");
-    let sub_langs_arg = format!("--sub-langs={}", langs);
 
-    let result = std::process::Command::new(yt_dlp_path)
-        .args([
-            "-f", quality,
-            "--write-subs",
-            "--write-auto-subs",
-            &sub_langs_arg,
-            "--sleep-requests", "3",
-            "--no-warnings",
-            "--print", "after_move:filepath",
-        ])
+    log::info!("Downloading video using yaydl...");
+    let result = std::process::Command::new("yaydl")
         .arg("-o")
         .arg(&output_str)
         .arg(format!("https://www.youtube.com/watch?v={}", video_id))
@@ -117,32 +115,32 @@ fn download_actual_video(
 
     match result {
         Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            // The last non-empty line is typically the video file path
-            stdout
-                .lines()
-                .rev()
-                .find_map(|l| {
-                    let trimmed = l.trim();
-                    if trimmed.is_empty()
-                        || trimmed.ends_with(".vtt")
-                        || trimmed.ends_with(".srt")
-                        || trimmed.ends_with(".ttml")
-                    {
-                        None
-                    } else {
-                        let p = PathBuf::from(trimmed);
-                        if p.exists() { Some(p) } else { None }
-                    }
-                })
+            // Find the video file by scanning the directory (in case yaydl changed extension)
+            let video_files: Option<Vec<PathBuf>> = std::fs::read_dir(video_dir)
+                .ok()
+                .map(|dir| {
+                    dir.filter_map(|e| e.ok())
+                        .filter(|e| {
+                            if let Some(ext) = e.path().extension() {
+                                let ext_str = ext.to_string_lossy().to_lowercase();
+                                matches!(ext_str.as_str(), "mp4" | "webm" | "avi" | "mkv" | "mov" | "mpg" | "flv")
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|e| e.path().clone())
+                        .collect()
+                });
+
+            video_files.and_then(|v| v.into_iter().next())
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            log::warn!("yt-dlp video download returned {}: {}", output.status, stderr.trim());
+            log::warn!("yaydl video download returned {}: {}", output.status, stderr.trim());
             None
         }
         Err(e) => {
-            log::warn!("Failed to run yt-dlp for video download: {}", e);
+            log::warn!("Failed to run yaydl for video download: {}", e);
             None
         }
     }
