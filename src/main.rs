@@ -251,6 +251,7 @@ async fn cmd_run(
             .as_deref()
             .unwrap_or(""),
         valid_folders,
+        cfg.processing.max_transcript_chars,
     );
 
     // Resolve yt-dlp path and storage config
@@ -833,6 +834,7 @@ async fn cmd_process(
             .as_deref()
             .unwrap_or(""),
         valid_folders,
+        cfg.processing.max_transcript_chars,
     );
 
     // Resolve yt-dlp path and storage config

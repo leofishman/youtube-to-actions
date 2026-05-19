@@ -44,6 +44,8 @@ pub struct ProcessingConfig {
     pub llm_model: Option<String>,
     /// Optional API key (llama.cpp doesn't need one)
     pub llm_api_key: Option<String>,
+    /// Max transcript characters to send to LLM (default: 25000)
+    pub max_transcript_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

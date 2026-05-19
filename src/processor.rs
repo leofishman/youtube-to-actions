@@ -12,6 +12,8 @@ pub struct Processor {
     valid_folders: Vec<String>,
     /// Original case versions of folders
     valid_folders_pretty: Vec<String>,
+    /// Maximum transcript characters to send to LLM
+    max_transcript_chars: usize,
 }
 
 impl Processor {
@@ -20,6 +22,7 @@ impl Processor {
         model: &str,
         api_key: &str,
         valid_folders: Vec<String>,
+        max_transcript_chars: Option<usize>,
     ) -> Self {
         let pretty = valid_folders.clone();
         let lower: Vec<String> = valid_folders.iter().map(|f| f.to_lowercase()).collect();
@@ -30,6 +33,7 @@ impl Processor {
             api_key: api_key.to_string(),
             valid_folders: lower,
             valid_folders_pretty: pretty,
+            max_transcript_chars: max_transcript_chars.unwrap_or(25000),
         }
     }
 
@@ -102,9 +106,10 @@ impl Processor {
         );
 
         if let Some(transcript) = transcript {
-            let max_chars = 12000;
-            let truncated = if transcript.len() > max_chars {
-                format!("...[TRUNCATED at {} chars]", max_chars)
+            let max_chars = self.max_transcript_chars;
+            let truncated = if transcript.chars().count() > max_chars {
+                let safe_slice: String = transcript.chars().take(max_chars).collect();
+                format!("{}\n...[TRUNCATED at {} chars]", safe_slice, max_chars)
             } else {
                 transcript.to_string()
             };
@@ -151,12 +156,10 @@ Description:
         );
 
         if let Some(transcript) = transcript {
-            let max_chars = 12000;
-            let truncated = if transcript.len() > max_chars {
-                format!(
-                    "...[TRUNCATED at {} chars]",
-                    max_chars
-                )
+            let max_chars = self.max_transcript_chars;
+            let truncated = if transcript.chars().count() > max_chars {
+                let safe_slice: String = transcript.chars().take(max_chars).collect();
+                format!("{}\n...[TRUNCATED at {} chars]", safe_slice, max_chars)
             } else {
                 transcript.to_string()
             };

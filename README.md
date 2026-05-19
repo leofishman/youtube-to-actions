@@ -2,15 +2,17 @@
 
 Watch a **private YouTube playlist**, process new videos with AI, and automatically create:
 
-- 📝 **Notes in Obsidian vault** — AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on video content. Filenames are SEO-friendly slugs, while the original title is preserved inside the note. Includes rich metadata: publish date, views, likes, comments, and high-resolution video poster.
+- 📝 **Notes in Obsidian vault** — For a Default list, AI chooses the best folder (Learn/, Ideas/, Resources/, Health/, Things/) based on video content. Includes rich metadata: publish date, views, likes, comments, and high-resolution video poster.
+  You can customize for each list, which obsidian folder will be used to create the notes, which fabric pattern will be used to process the videos, and whether the videos should be moved to a second playlist after processing.
 - ✅ Optionally: **Tasks in Super Productivity** (configurable, with per-playlist project targeting)
 
 Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in background via cron.
+Built with [Hermes 🦋](https://github.com/NousResearch/hermes-agent) as personal assistant. [Antigravity](https://antigravity.google.com/) as IDE. Gemini 3 Pro, Deepseek 4, Qwen 3.6 as LLM. [Superproductivity](https://github.com/super-productivity/super-productivity/) as task manager (SP). [Obsidian](https://obsidian.md/) as note taking app.
 
 ## Features
 
 - 📂 **Multiple Playlists** — monitor multiple playlists simultaneously, each with its own processing rules, target folder, or SP project.
-- 🧠 **AI classification** — analyzes title + description + transcript to categorize each video
+- 🧠 **AI classification** — analyzes title + description + transcript + [fabric patterns](https://github.com/danielmiessler/Fabric/) to categorize each video
 - 📁 **Smart folder routing** — AI picks the Obsidian folder, with case-insensitive fallback
 - 🔗 **Clean Filenames** — automatically generates slugs for filenames (e.g., `mi-video-interesante.md`) while keeping the full YouTube title in the metadata and header.
 - 🎨 **Fabric patterns** — optional deep analysis via community Fabric patterns (`--pattern extract_wisdom`). Playlists can run multiple patterns sequentially (e.g. `patterns = ["summarize", "extract_wisdom"]`), concatenating results cleanly in Obsidian.
@@ -18,7 +20,7 @@ Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in b
 - 📋 **Final report** — detailed summary of what was processed and where it was saved
 - 🔄 **Playlist cleanup** — optionally move processed videos to a second playlist
 - 🏷️ **Auto-tagging** — relevant keywords extracted from the content
-- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yaydl` (disabled by default to avoid heavy downloads).
+- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yaydl` (disabled by default to avoid heavy downloads). --WIP
 - 💾 **State tracking** — only processes new videos (use `--force` to reprocess)
 
 ## Quick Start
@@ -28,7 +30,7 @@ Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in b
 #    (Download from Google Cloud Console > OAuth 2.0 Client ID > Desktop App)
 
 # 2. Initialize config
-cargo run -- init
+yt2action init
 
 # 3. Edit config with your playlist ID and LLM endpoint
 vim ~/.config/yt2action/config.toml
@@ -52,15 +54,15 @@ sudo cp target/release/yt2action /usr/local/bin/
 
 ## Prerequisites
 
-| What | Why | How |
-|------|-----|-----|
-| **Google Cloud project** | OAuth 2.0 access to your private YouTube playlists | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials → Create OAuth client ID (Desktop App) |
-| **`credentials.json`** | OAuth client secret — place in project root | Downloaded during OAuth client creation above |
-| **YouTube Data API v3** | Must be enabled for your project | [Enable here](https://console.cloud.google.com/apis/library/youtube.googleapis.com) |
-| **ytt & yaydl** | Transcript extraction and video downloading | Install via your package manager or GitHub |
-| **Super Productivity** | Receives tasks via Local REST API | Settings → Misc → **Enable local REST API** (port 3876) |
-| **LLM server** | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below |
-| **Obsidian vault** (optional) | Notes are sorted into folders by theme | Set `obsidian_vault` in config |
+| What                          | Why                                                                    | How                                                                                                                             |
+| ----------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Google Cloud project**      | OAuth 2.0 access to your private YouTube playlists                     | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials → Create OAuth client ID (Desktop App) |
+| **`credentials.json`**        | OAuth client secret — place in project root                            | Downloaded during OAuth client creation above                                                                                   |
+| **YouTube Data API v3**       | Must be enabled for your project                                       | [Enable here](https://console.cloud.google.com/apis/library/youtube.googleapis.com)                                             |
+| **ytt & yaydl**               | Transcript extraction and video downloading                            | Install via your package manager or GitHub                                                                                      |
+| **Super Productivity**        | Receives tasks via Local REST API                                      | Settings → Misc → **Enable local REST API** (port 3876)                                                                         |
+| **LLM server**                | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below                                                                                       |
+| **Obsidian vault** (optional) | Notes are sorted into folders by theme                                 | Set `obsidian_vault` in config                                                                                                  |
 
 ## Google OAuth Setup
 
@@ -69,16 +71,16 @@ To interact with private YouTube playlists, you need to create a Google Cloud Pr
 1.  **Create a Project**: Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a new project.
 2.  **Enable the API**: Navigate to **APIs & Services > Library** and search for **YouTube Data API v3**. Enable it.
 3.  **Configure Consent Screen**:
-    *   Go to **APIs & Services > OAuth consent screen**.
-    *   Choose **External** user type.
-    *   **Scoping**: Add the `https://www.googleapis.com/auth/youtube` scope (required for reading and moving videos).
-    *   **Test Users**: Since the app won't be "Published", you **MUST** add your email address to the **Test users** list, otherwise you will get a "403 Access Blocked" error during login.
+    - Go to **APIs & Services > OAuth consent screen**.
+    - Choose **External** user type.
+    - **Scoping**: Add the `https://www.googleapis.com/auth/youtube` scope (required for reading and moving videos).
+    - **Test Users**: Since the app won't be "Published", you **MUST** add your email address to the **Test users** list, otherwise you will get a "403 Access Blocked" error during login.
 4.  **Create Credentials**:
-    *   Go to **APIs & Services > Credentials**.
-    *   Click **Create Credentials > OAuth client ID**.
-    *   Select **Desktop App** as the Application Type.
-    *   Download the JSON file and rename it to `credentials.json`.
-    *   Place it in the root of your `yt2action` directory.
+    - Go to **APIs & Services > Credentials**.
+    - Click **Create Credentials > OAuth client ID**.
+    - Select **Desktop App** as the Application Type.
+    - Download the JSON file and rename it to `credentials.json`.
+    - Place it in the root of your `yt2action` directory.
 
 > **Tip**: Rust hint for Google OAuth — If you need to refresh tokens frequently, ensure your consent screen is set to "Production" (requires approval) or just re-authenticate if the test token expires after 7 days.
 
@@ -169,7 +171,7 @@ yt2action health
 
 File: `~/.config/yt2action/config.toml`
 
-```toml
+````toml
 [youtube]
 credentials_path = "credentials.json"
 playlist_id = "PL_xxxxxxxxxxxxxxxxxxxx"
@@ -209,10 +211,11 @@ sp_project_id = "WORK_PROJECT"
 id = "PL_personal_learning"
 patterns = ["summarize"]
 sp_enabled = false # Override global sp_enabled for this playlist
-```
+````
 
 Playlist-specific settings (`sp_enabled`, `sp_project_id`) override the global defaults in the `[output]` section.
-```
+
+````
 
 ### LLM Support
 
@@ -230,7 +233,7 @@ yt2action uses the **OpenAI-compatible API** format (`/v1/chat/completions`), so
 ```bash
 # Every 6 hours, process the 3 newest videos with wisdom extraction
 0 */6 * * * /usr/local/bin/yt2action run --limit 3 --pattern extract_wisdom >> ~/.yt2action.log 2>&1
-```
+````
 
 ## How It Works
 
@@ -267,14 +270,14 @@ yt2action run
 
 If the AI doesn't return a valid folder, it falls back to:
 
-| Category | Vault Folder | Example |
-|----------|-------------|---------|
-| Tutorial | `Learn/` | Rust tutorial, cooking class |
-| Concept | `Ideas/` | ZKP explanation, mental model |
-| Tool / News | `Resources/` | New CLI tool, tech announcement |
-| Health | `Health/` | Exercise routine, nutrition |
-| Entertainment | `Things/` | Vlog, music, comedy |
-| Other | `Resources/YouTube/` | Misc fallback |
+| Category      | Vault Folder         | Example                         |
+| ------------- | -------------------- | ------------------------------- |
+| Tutorial      | `Learn/`             | Rust tutorial, cooking class    |
+| Concept       | `Ideas/`             | ZKP explanation, mental model   |
+| Tool / News   | `Resources/`         | New CLI tool, tech announcement |
+| Health        | `Health/`            | Exercise routine, nutrition     |
+| Entertainment | `Things/`            | Vlog, music, comedy             |
+| Other         | `Resources/YouTube/` | Misc fallback                   |
 
 ## Project Structure
 
