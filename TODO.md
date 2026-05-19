@@ -6,17 +6,18 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 
 ## 🚀 Funcionalidades Prioritarias
 
-### 1. Configuración de Carpeta Obsidian por Playlist 📂
-*   **Descripción:** Permitir especificar una carpeta de destino en Obsidian (`obsidian_folder` o `target_folder`) específica para cada lista de reproducción en el archivo `config.toml`, de modo que los videos de diferentes playlists se clasifiquen en diferentes directorios automáticamente (sin depender únicamente de la decisión del LLM, o bien usándolo como una carpeta base).
+### 1. Configuración de Carpeta Obsidian por Playlist 📂 (Completado)
+*   **Descripción:** Permitir especificar una carpeta de destino en Obsidian (`obsidian_folder`) específica para cada lista de reproducción en el archivo `config.toml`, de modo que los videos de diferentes playlists se guarden en ese directorio en lugar de depender de la categorización por IA.
 *   **Diseño en `config.toml`:**
     ```toml
     [[youtube.playlists]]
     id = "PLAGdrpXgWKzoxMJwIByON_syWny0Ni9tt"
     obsidian_folder = "Proyectos/Rust"
     ```
-*   **Cambios requeridos:**
-    *   Actualizar `PlaylistPatternConfig` en `src/config.rs` para incluir `pub obsidian_folder: Option<String>`.
-    *   Pasar este valor a través de `cmd_run` y `obsidian::create_note`.
+*   **Implementación:**
+    *   Agregado `pub obsidian_folder: Option<String>` a `PlaylistPatternConfig` en `src/config.rs`.
+    *   Modificada la firma de `obsidian::create_note` para recibir un argumento opcional `folder_override`.
+    *   Integrado en el flujo de playlists en `main.rs` para sobreescribir la carpeta por defecto si está configurada.
 
 ---
 

@@ -6,10 +6,12 @@ use std::path::Path;
 pub fn create_note(
     vault_path: &Path,
     processed: &ProcessedVideo,
+    folder_override: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let filename = format!("{}.md", slugify(&processed.video.title));
-    let dir = vault_path.join(&processed.target_folder);
+    let folder = folder_override.unwrap_or(&processed.target_folder);
+    let dir = vault_path.join(folder);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create directory: {:?}", dir))?;
 

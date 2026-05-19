@@ -34,6 +34,8 @@ pub struct PlaylistPatternConfig {
     pub sp_enabled: Option<bool>,
     /// SP project ID for this playlist (overrides global sp_project_id)
     pub sp_project_id: Option<String>,
+    /// Target Obsidian folder for this playlist (e.g. "Proyectos/Rust")
+    pub obsidian_folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

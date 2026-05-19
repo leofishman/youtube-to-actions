@@ -157,6 +157,7 @@ async fn cmd_run(
                 vec![],
                 None, // sp_enabled - use global
                 cfg.output.sp_project_id.clone(), // sp_project_id - use global
+                None, // obsidian_folder - use default
             ));
         }
         
@@ -167,6 +168,7 @@ async fn cmd_run(
                 p.patterns.clone(),
                 p.sp_enabled,
                 p.sp_project_id.clone(),
+                p.obsidian_folder.clone(),
             ));
         }
         
@@ -183,7 +185,7 @@ async fn cmd_run(
 
     // Process each playlist
     let mut total_processed = 0;
-    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id) in playlists_to_process {
+    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id, playlist_obsidian_folder) in playlists_to_process {
         if total_processed >= limit {
             break;
         }
@@ -350,7 +352,7 @@ async fn cmd_run(
                 // Create Obsidian note (primary output)
                 if let Some(ref vault) = cfg.output.obsidian_vault {
                     let vault_path = PathBuf::from(vault);
-                    match obsidian::create_note(&vault_path, &processed) {
+                    match obsidian::create_note(&vault_path, &processed, playlist_obsidian_folder.as_deref()) {
                         Ok(path) => {
                             result.note_path = Some(path.to_string_lossy().to_string());
                             log::info!("  📝 Note created: {:?}", path);
@@ -916,7 +918,7 @@ async fn cmd_process(
             // Create Obsidian note
             if let Some(ref vault) = cfg.output.obsidian_vault {
                 let vault_path = PathBuf::from(vault);
-                match obsidian::create_note(&vault_path, &processed) {
+                match obsidian::create_note(&vault_path, &processed, None) {
                     Ok(path) => {
                         log::info!("  📝 Note created: {:?}", path);
                     }
