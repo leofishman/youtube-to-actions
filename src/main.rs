@@ -363,12 +363,23 @@ async fn cmd_run(
 
                 // Create SP task (optional)
                 let sp_enabled = playlist_sp_enabled.unwrap_or(cfg.output.sp_enabled);
-                let project_id = playlist_project_id
+                let project_id_raw = playlist_project_id
                     .clone()
                     .or_else(|| cfg.output.sp_project_id.clone())
                     .unwrap_or_else(|| "INBOX_PROJECT".to_string());
                 
                 if sp_enabled {
+                    let resolved_id = match sp.resolve_project_id(&project_id_raw).await {
+                        Ok(Some(id)) => {
+                            log::debug!("Resolved SP project '{}' to ID: {}", project_id_raw, id);
+                            id
+                        }
+                        _ => {
+                            log::debug!("Could not resolve SP project '{}', using raw value", project_id_raw);
+                            project_id_raw
+                        }
+                    };
+
                     let title = format!("[📺] {}", processed.video.title);
                     let notes = format!(
                         "{}\n\n## Puntos clave\n{}\n\n🔗 https://youtube.com/watch?v={}",
@@ -385,7 +396,7 @@ async fn cmd_run(
                     let task = types::SpTask {
                         title,
                         notes,
-                        project_id,
+                        project_id: resolved_id,
                         tag_ids: processed.classification.tags.clone(),
                     };
 

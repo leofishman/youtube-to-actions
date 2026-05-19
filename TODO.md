@@ -52,12 +52,12 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
     2. Documentar la limitación del output en el prompt del sistema (ej. cambiar "Extract all ideas" por "Extract up to 10 key ideas").
     3. Analizar la viabilidad de proveer un set de "patrones livianos" optimizados para uso local dentro del proyecto.
 
-### 9. Resolución inteligente de Proyectos en Super Productivity 📋 (Para Mañana / Pendiente)
+### 9. Resolución inteligente de Proyectos en Super Productivity 📋 (Completado)
 *   **Descripción:** Actualmente, Super Productivity requiere el ID único (ej. `jS8wKd...`) para asignar la tarea al proyecto correcto, pero el usuario configura el nombre legible (ej. `sp_project_id = "hidroponia"`). Si se pasa el nombre, la API no matchea correctamente o falla la asignación limpia.
-*   **Plan:** 
-    1. Agregar una llamada al endpoint de la API de Super Productivity para listar los proyectos activos.
-    2. Buscar coincidencias por título (case-insensitive) y mapear el nombre legible configurado por el usuario al ID real de Super Productivity.
-    3. Utilizar ese ID real al crear la tarea para que aparezca instantáneamente en la columna del proyecto correspondiente.
+*   **Implementación:** 
+    1. Agregada la llamada al endpoint `/projects` de la API de Super Productivity para listar los proyectos activos.
+    2. Realizado un mapeo automático (case-insensitive) del nombre legible configurado al ID de proyecto interno.
+    3. Usamos ese ID resuelto para crear la tarea, con fallback al nombre original si no se encuentra.
 
 
 

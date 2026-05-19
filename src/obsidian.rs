@@ -62,7 +62,7 @@ comments: {comments}
 
 # {title}
 
-![Poster](https://img.youtube.com/vi/{id}/maxresdefault.jpg)
+[![Poster](https://img.youtube.com/vi/{id}/maxresdefault.jpg)](https://youtube.com/watch?v={id})
 
 **Canal:** {channel}
 **Duración:** {duration}

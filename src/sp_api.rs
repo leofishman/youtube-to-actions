@@ -62,4 +62,64 @@ impl SpClient {
 
         Ok(resp["ok"].as_bool().unwrap_or(false))
     }
+
+    /// List projects in Super Productivity
+    pub async fn list_projects(&self) -> Result<Vec<Value>> {
+        let resp = self
+            .client
+            .get(format!("{}/projects", self.base_url))
+            .send()
+            .await
+            .context("SP API list projects request failed")?
+            .json::<Value>()
+            .await
+            .context("Failed to parse SP projects response")?;
+
+        if resp["ok"].as_bool().unwrap_or(false) {
+            let data = resp["data"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            Ok(data)
+        } else {
+            anyhow::bail!(
+                "SP API error listing projects: {}",
+                resp["error"]["message"].as_str().unwrap_or("unknown")
+            );
+        }
+    }
+
+    /// Resolve project ID by title (case-insensitive)
+    pub async fn resolve_project_id(&self, title: &str) -> Result<Option<String>> {
+        let projects = match self.list_projects().await {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Failed to fetch SP projects for resolution: {}", e);
+                return Ok(None);
+            }
+        };
+        let search_title = title.to_lowercase();
+        
+        // 1. Try case-insensitive title match
+        for p in &projects {
+            if let Some(t) = p["title"].as_str() {
+                if t.to_lowercase() == search_title {
+                    if let Some(id) = p["id"].as_str() {
+                        return Ok(Some(id.to_string()));
+                    }
+                }
+            }
+        }
+        
+        // 2. Try direct ID match
+        for p in &projects {
+            if let Some(id) = p["id"].as_str() {
+                if id == title {
+                    return Ok(Some(id.to_string()));
+                }
+            }
+        }
+
+        Ok(None)
+    }
 }

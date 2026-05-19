@@ -7,7 +7,7 @@ Watch a **private YouTube playlist**, process new videos with AI, and automatica
 - ✅ Optionally: **Tasks in Super Productivity** (configurable, with per-playlist project targeting)
 
 Built with **Rust 🦀** — single binary, zero runtime deps, runs quietly in background via cron.
-Built with [Hermes 🦋](https://github.com/NousResearch/hermes-agent) as personal assistant. [Antigravity](https://antigravity.google.com/) as IDE. Gemini 3 Pro, Deepseek 4, Qwen 3.6 as LLM. [Superproductivity](https://github.com/super-productivity/super-productivity/) as task manager (SP). [Obsidian](https://obsidian.md/) as note taking app.
+Built with [Hermes 🦋](https://github.com/NousResearch/hermes-agent) as personal assistant. [Antigravity](https://antigravity.google.com/) as IDE. [llama.cpp](https://github.com/ggerganov/llama.cpp) to run LLM locally. Gemini 3 Pro, Deepseek 4 flash, Qwen 3.6 as LLM. [Superproductivity](https://github.com/super-productivity/super-productivity/) as task manager (SP). [Obsidian](https://obsidian.md/) as note taking app.
 
 ## Features
 
