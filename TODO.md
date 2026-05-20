@@ -62,3 +62,52 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 
 
 
+
+---
+
+## 🏗️ Sugerencias de Arquitectura y Calidad de Código
+
+### 10. Uso de `thiserror` y Tipado Fino de Errores
+*   **Descripción:** Utilizar `thiserror` (ya presente en `Cargo.toml`) para definir errores específicos por dominio (ej. `YoutubeError`, `SpApiError`, `LlmError`). Esto permite tomar decisiones programáticas (ej. reintentar si es error de red transitorio, abortar si es auth inválido) en lugar de encadenar errores genéricos de `anyhow`.
+
+### 11. Refactor hacia Traits (Strategy Pattern)
+*   **Descripción:** Abstraer el proveedor de LLM a un trait `AiProvider` y el manejador de descargas a `VideoDownloader`. Esto facilitaría agregar soporte futuro para otras APIs de LLM (OpenAI, Anthropic) u otros downloaders aparte de `yaydl/ytt` sin ensuciar la lógica principal.
+
+### 12. Plantillas Personalizables para Obsidian (Templating)
+*   **Descripción:** Reemplazar la macro `format!` hardcodeada en `obsidian.rs` por un motor de plantillas (como `Tera` o `Handlebars`) o cargar un archivo `.md` base de configuración. Permitiría a los usuarios modificar el formato del *frontmatter* y la estructura visual de la nota generada (ej. configurar de otra forma los embeds o `![[poster.jpg]]`) sin tocar código Rust.
+
+---
+
+## 🛡️ Resiliencia y Red
+
+### 13. Reintentos Inteligentes (Retries)
+*   **Descripción:** Añadir un wrapper de reintentos exponenciales para las peticiones externas (Google API, SP API, LLM local). Esto mitigaría fallos transitorios de red o *rate limits*, haciendo las ejecuciones en cron mucho más estables.
+
+### 14. Manejo Estricto de Timeouts
+*   **Descripción:** Configurar `timeouts` explícitos en los clientes de `reqwest`, en especial para el LLM local, evitando que la ejecución de `yt2action` se quede bloqueada indefinidamente si el modelo de IA o la API externa no responden.
+
+---
+
+## 🖥️ Experiencia de Usuario (CLI) y Logging
+
+### 15. Modo Simulación (`--dry-run`)
+*   **Descripción:** Añadir un flag `--dry-run` a `yt2action run`. Ejecutaría la extracción y la clasificación de IA, informando por pantalla de las acciones a tomar (crear nota, asignar tarea, mover en playlist) sin ejecutar realmente la escritura ni alterar el estado. Útil para testear prompts y settings.
+
+### 16. Comandos de Gestión de Estado (`state`)
+*   **Descripción:** Añadir subcomandos para gestionar el historial sin editar el JSON: `yt2action state show`, `yt2action state reset` y `yt2action state unmark <video_id>`.
+
+### 17. Progreso y Feedback Visual (UI/UX)
+*   **Descripción:** Cuando se ejecuta la herramienta de forma manual, mostrar barras de progreso elegantes (usando crates como `indicatif`), especialmente útil cuando se procesan listas con múltiples videos.
+
+### 18. Logging Avanzado (Tracing)
+*   **Descripción:** Migrar o complementar el logger actual (`env_logger`/`log`) con la crate `tracing`. Proporcionaría un árbol de logs estructurado y con spans, ideal para depurar fallos en los pasos intermedios (extracción -> IA -> guardado) cuando surjan errores intermitentes.
+
+---
+
+## 🔮 Ideas a Futuro Lejano
+
+### 19. Web UI Ligera o TUI
+*   **Descripción:** Desarrollar una pequeña interfaz gráfica de terminal (TUI) o web (ej. `axum`) para consultar el historial de procesados, visualizar métricas de la herramienta y gestionar errores de forma más interactiva que revisar logs en texto.
+
+### 20. Internacionalización o Idioma Configurable
+*   **Descripción:** Actualmente el prompt y los resúmenes se solicitan explícitamente en español en `processor.rs`. Permitir configurarlo por el usuario en `config.toml` de manera sencilla.
