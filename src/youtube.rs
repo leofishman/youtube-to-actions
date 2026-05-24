@@ -21,6 +21,14 @@ impl YoutubeClient {
             .await
             .context("Failed to read credentials.json")?;
 
+        // If token_cache.json is empty (0 bytes), delete it to avoid parser EOF errors
+        if let Ok(metadata) = std::fs::metadata("token_cache.json") {
+            if metadata.len() == 0 {
+                log::warn!("token_cache.json is empty/corrupt. Deleting it to force re-authentication.");
+                let _ = std::fs::remove_file("token_cache.json");
+            }
+        }
+
         let auth = yup_oauth2::InstalledFlowAuthenticator::builder(
             secret,
             yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
@@ -127,6 +135,63 @@ impl YoutubeClient {
 
         self.fill_durations(&token, &mut videos).await?;
         Ok(videos)
+    }
+
+    /// Fetch details of a single video by ID
+    #[allow(dead_code)]
+    pub async fn get_video(&self, video_id: &str) -> Result<Video> {
+        let token = self.get_token().await?;
+        let url = format!(
+            "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id={}",
+            video_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .context("YouTube API video request failed")?
+            .json::<Value>()
+            .await?;
+
+        if let Some(error) = resp.get("error") {
+            anyhow::bail!(
+                "YouTube API error: {}",
+                error["message"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        let items = resp["items"].as_array().context("No video items returned")?;
+        if items.is_empty() {
+            anyhow::bail!("Video not found on YouTube");
+        }
+
+        let item = &items[0];
+        let snippet = &item["snippet"];
+        let content = &item["contentDetails"];
+        let stats = &item["statistics"];
+
+        let duration = content["duration"].as_str().unwrap_or("PT0S");
+        let view_count = stats["viewCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+        let like_count = stats["likeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+        let dislike_count = stats["dislikeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+        let comment_count = stats["commentCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+        let published_at = snippet["publishedAt"].as_str().unwrap_or("").to_string();
+
+        Ok(Video {
+            id: video_id.to_string(),
+            playlist_item_id: String::new(),
+            title: snippet["title"].as_str().unwrap_or("").to_string(),
+            channel: snippet["channelTitle"].as_str().unwrap_or("").to_string(),
+            description: snippet["description"].as_str().unwrap_or("").to_string(),
+            published_at,
+            duration_seconds: Some(parse_iso8601_duration(duration)),
+            view_count,
+            like_count,
+            dislike_count,
+            comment_count,
+        })
     }
 
     /// Add a video to a playlist by video ID

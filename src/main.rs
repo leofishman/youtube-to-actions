@@ -36,11 +36,9 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// Apply a Fabric pattern for rich content analysis
-        /// (e.g. "extract_wisdom", "summarize", "analyze_claims")
-        /// Patterns stored in ~/.config/fabric/patterns/
-        #[arg(short, long)]
-        pattern: Option<String>,
+        /// Apply Fabric patterns for rich content analysis (comma-separated or multiple flags, e.g. "summarize,extract_wisdom")
+        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        patterns: Vec<String>,
 
         /// Actually download the video file locally (default: false, only fetches transcript)
         #[arg(long)]
@@ -75,13 +73,19 @@ enum Commands {
         #[arg(short, long)]
         config: Option<PathBuf>,
 
-        /// Use Fabric pattern for analysis (e.g. "summarize", "extract_wisdom")
-        #[arg(short, long)]
-        pattern: Option<String>,
+        /// Use Fabric patterns for analysis (comma-separated or multiple flags, e.g. "summarize,extract_wisdom")
+        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        patterns: Vec<String>,
 
         /// Actually download the video file locally (default: false, only fetches transcript)
         #[arg(long)]
         download_video: bool,
+    },
+    /// Synchronize Fabric patterns from the official repository to ~/.config/fabric/patterns/
+    SyncPatterns {
+        /// Force update and overwrite existing patterns
+        #[arg(short, long)]
+        force: bool,
     },
 }
 
@@ -96,14 +100,15 @@ async fn main() -> anyhow::Result<()> {
             config,
             limit,
             force,
-            pattern,
+            patterns,
             download_video,
-        } => cmd_run(config, limit, force, pattern, download_video).await,
+        } => cmd_run(config, limit, force, patterns, download_video).await,
         Commands::Init { output } => cmd_init(output),
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
-        Commands::Process { video, config, pattern, download_video } => cmd_process(video, config, pattern, download_video).await,
+        Commands::Process { video, config, patterns, download_video } => cmd_process(video, config, patterns, download_video).await,
+        Commands::SyncPatterns { force } => cmd_sync_patterns(force).await,
     }
 }
 
@@ -111,7 +116,7 @@ async fn cmd_run(
     config_path: Option<PathBuf>,
     limit: usize,
     force: bool,
-    pattern: Option<String>,
+    patterns: Vec<String>,
     download_video_flag: bool,
 ) -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
@@ -302,9 +307,9 @@ async fn cmd_run(
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string());
 
-                // If a Fabric pattern is specified, run the second phase
-                let patterns_to_run = if let Some(ref cli_pattern) = pattern {
-                    vec![cli_pattern.clone()]
+                // If Fabric patterns are specified, run the second phase
+                let patterns_to_run = if !patterns.is_empty() {
+                    patterns.clone()
                 } else {
                     playlist_patterns.clone()
                 };
@@ -777,66 +782,54 @@ fn save_state(path: &PathBuf, state: &types::ProcessState) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Process a single video by ID or position in playlist
+/// Process a single video by ID, URL, or position in playlist
 async fn cmd_process(
     video_arg: String,
     config_path: Option<PathBuf>,
-    pattern: Option<String>,
+    patterns: Vec<String>,
     download_video_flag: bool,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
-    // Authenticate with YouTube
-    let creds_path = cfg
-        .youtube
-        .credentials_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("credentials.json"));
+    let resolved_id = extract_video_id(&video_arg);
 
-    log::info!("Authenticating with Google...");
-    let yt = YoutubeClient::authenticate(&creds_path).await?;
-    log::info!("YouTube: authenticated.");
+    // Resolve video: check if position number first
+    let video = if resolved_id.parse::<usize>().is_ok() {
+        let pos = resolved_id.parse::<usize>().unwrap();
 
-    // Fetch playlist to find the video
-    log::info!("Fetching playlist {}...", cfg.youtube.playlist_id);
-    let videos = yt.get_playlist_videos(&cfg.youtube.playlist_id).await?;
+        // Authenticate with YouTube (only required for playlist pos resolution)
+        let creds_path = cfg
+            .youtube
+            .credentials_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("credentials.json"));
 
-    // Resolve video by ID or position
-    let video = if video_arg.starts_with("PL") || video_arg.len() > 11 {
-        // Assume it's a video ID
-        videos.iter().find(|v| v.id == video_arg)
-    } else {
-        // Assume it's a position number (1-based)
-        match video_arg.parse::<usize>() {
-            Ok(pos) => {
-                if pos > 0 && pos <= videos.len() {
-                    Some(&videos[pos - 1])
-                } else {
-                    anyhow::bail!(
-                        "Position {} out of range (playlist has {} videos)",
-                        pos,
-                        videos.len()
-                    );
-                }
-            }
-            Err(_) => {
-                // Try as video ID anyway
-                videos.iter().find(|v| v.id == video_arg)
-            }
+        log::info!("Authenticating with Google OAuth (required for playlist pos)...");
+        let yt = YoutubeClient::authenticate(&creds_path).await?;
+        log::info!("YouTube: authenticated.");
+
+        log::info!("Fetching playlist {} to resolve position...", cfg.youtube.playlist_id);
+        let playlist_videos = yt.get_playlist_videos(&cfg.youtube.playlist_id).await?;
+        if pos > 0 && pos <= playlist_videos.len() {
+            playlist_videos[pos - 1].clone()
+        } else {
+            anyhow::bail!(
+                "Position {} out of range (playlist has {} videos)",
+                pos,
+                playlist_videos.len()
+            );
         }
+    } else {
+        log::info!("Fetching public video details via yt-dlp for ID: {}...", resolved_id);
+        get_video_metadata_ytdlp(&cfg.yt_dlp_path(), &resolved_id)?
     };
-
-    let video = video.ok_or_else(|| {
-        anyhow::anyhow!("Video not found: {}\nUse a valid video ID or position (1-{})",
-            video_arg, videos.len())
-    })?;
 
     println!("══════════════════════════════════════════════════════");
     println!("  📺 PROCESANDO VIDEO INDIVIDUAL");
     println!("══════════════════════════════════════════════════════");
     println!("  Título: {}", video.title);
-    println!("  ID: {} (posición {}/{})", video.id, videos.iter().position(|v| v.id == video.id).unwrap() + 1, videos.len());
+    println!("  ID: {}", video.id);
     println!("  Canal: {}", video.channel);
     println!();
 
@@ -906,7 +899,7 @@ async fn cmd_process(
     .await?;
 
   // AI processing
-        match proc.process(video, transcript_result.transcript.as_deref()).await {
+        match proc.process(&video, transcript_result.transcript.as_deref()).await {
             Ok(mut processed) => {
                 // Set local video path
                 processed.local_video_path = transcript_result
@@ -914,8 +907,8 @@ async fn cmd_process(
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string());
 
-            // If a Fabric pattern is specified, run the second phase
-            if let Some(ref pattern_name) = pattern {
+            // If Fabric patterns are specified, run the second phase
+            for pattern_name in &patterns {
                 let patterns_dir = format!(
                     "{}/.config/fabric/patterns",
                     std::env::var("HOME").unwrap_or_default()
@@ -924,7 +917,7 @@ async fn cmd_process(
 
                 match proc
                     .process_with_pattern(
-                        video,
+                        &video,
                         transcript_result.transcript.as_deref(),
                         pattern_name,
                         &patterns_dir,
@@ -932,7 +925,13 @@ async fn cmd_process(
                     .await
                 {
                     Ok(fabric_output) => {
-                        processed.fabric_output = Some(fabric_output);
+                        if processed.fabric_output.is_none() {
+                            processed.fabric_output = Some(fabric_output);
+                        } else {
+                            let mut current = processed.fabric_output.take().unwrap();
+                            current.push_str(&format!("\n\n---\n\n# Patrón: {}\n\n{}", pattern_name, fabric_output));
+                            processed.fabric_output = Some(current);
+                        }
                         log::info!("  📜 Fabric pattern output stored");
                     }
                     Err(e) => {
@@ -981,4 +980,150 @@ async fn cmd_process(
     }
 
     Ok(())
+}
+
+async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        anyhow::bail!("HOME environment variable is not set");
+    }
+    
+    let target_dir = std::path::PathBuf::from(&home)
+        .join(".config")
+        .join("fabric")
+        .join("patterns");
+
+    if target_dir.exists() && !force {
+        println!("⚠️  El directorio de patrones ya existe en {:?}", target_dir);
+        println!("   Usa `yt2action sync-patterns --force` para forzar la actualización.");
+        return Ok(());
+    }
+
+    println!("📥 Sincronizando patrones de Fabric desde el repositorio oficial...");
+    
+    // Create a temporary directory in the workspace
+    let tmp_dir = std::path::PathBuf::from("/tmp/yt2action_fabric_sync");
+    if tmp_dir.exists() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    println!("   Clonando https://github.com/danielmiessler/fabric.git (shallow clone)...");
+    
+    // Run git clone --depth 1
+    let status = std::process::Command::new("git")
+        .args(&["clone", "--depth", "1", "https://github.com/danielmiessler/fabric.git", "."])
+        .current_dir(&tmp_dir)
+        .status()?;
+
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!("Error: Falló la clonación del repositorio de Fabric.");
+    }
+
+    let source_patterns = tmp_dir.join("patterns");
+    if !source_patterns.exists() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!("Error: No se encontró la carpeta 'patterns' en el repositorio clonado.");
+    }
+
+    println!("   Copiando patrones a {:?}", target_dir);
+    
+    // Create target dir if it doesn't exist
+    std::fs::create_dir_all(&target_dir)?;
+
+    // Copy patterns recursively
+    copy_dir_all(&source_patterns, &target_dir)?;
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    println!("✅ ¡Sincronización completada con éxito!");
+    println!("   Los patrones de Fabric están listos en {:?}", target_dir);
+
+    Ok(())
+}
+
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_video_id(input: &str) -> String {
+    let input = input.trim();
+    if input.contains("youtube.com/watch") {
+        if let Some(pos) = input.find("v=") {
+            let start = pos + 2;
+            let end = input[start..].find('&').map(|idx| start + idx).unwrap_or(input.len());
+            return input[start..end].to_string();
+        }
+    } else if input.contains("youtu.be/") {
+        if let Some(pos) = input.rfind('/') {
+            let start = pos + 1;
+            let end = input[start..].find('?').map(|idx| start + idx).unwrap_or(input.len());
+            return input[start..end].to_string();
+        }
+    }
+    input.to_string()
+}
+
+fn get_video_metadata_ytdlp(yt_dlp_path: &str, video_id: &str) -> anyhow::Result<crate::types::Video> {
+    let url = format!("https://www.youtube.com/watch?v={}", video_id);
+    let output = std::process::Command::new(yt_dlp_path)
+        .args(&["--dump-json", "--skip-download", &url])
+        .output()
+        .context("Failed to execute yt-dlp to fetch video metadata")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("yt-dlp failed to get metadata: {}", stderr.trim());
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&json_str)
+        .context("Failed to parse yt-dlp metadata JSON")?;
+
+    let id = json["id"].as_str().unwrap_or(video_id).to_string();
+    let title = json["title"].as_str().unwrap_or("").to_string();
+    let channel = json["channel"].as_str().or_else(|| json["uploader"].as_str()).unwrap_or("").to_string();
+    let description = json["description"].as_str().unwrap_or("").to_string();
+    
+    // Parse duration
+    let duration_seconds = json["duration"].as_u64().or_else(|| json["duration"].as_f64().map(|f| f as u64));
+
+    // Metrics
+    let view_count = json["view_count"].as_u64();
+    let like_count = json["like_count"].as_u64();
+    let comment_count = json["comment_count"].as_u64();
+
+    // Published date (yt-dlp outputs "YYYYMMDD", let's format it as "YYYY-MM-DD")
+    let raw_date = json["upload_date"].as_str().unwrap_or("");
+    let published_at = if raw_date.len() == 8 {
+        format!("{}-{}-{}", &raw_date[0..4], &raw_date[4..6], &raw_date[6..8])
+    } else {
+        raw_date.to_string()
+    };
+
+    Ok(crate::types::Video {
+        id,
+        playlist_item_id: String::new(),
+        title,
+        channel,
+        description,
+        published_at,
+        duration_seconds,
+        view_count,
+        like_count,
+        dislike_count: None,
+        comment_count,
+    })
 }

@@ -90,12 +90,13 @@ To interact with private YouTube playlists, you need to create a Google Cloud Pr
 Usage: yt2action <COMMAND>
 
 Commands:
-  auth    Authenticate with Google OAuth (opens browser)
-  run     Full pipeline: fetch playlist → process → create tasks/notes
-  list    List videos in playlist (without processing)
-  init    Create default config file at ~/.config/yt2action/
-  health  Test SP API connection
-  help    Print help
+  auth           Authenticate with Google OAuth (opens browser)
+  run            Full pipeline: fetch playlist → process → create tasks/notes
+  list           List videos in playlist (without processing)
+  init           Create default config file at ~/.config/yt2action/
+  health         Test SP API connection
+  sync-patterns  Synchronize Fabric patterns from the official repository
+  help           Print help
 ```
 
 ### `yt2action auth`
@@ -146,6 +147,28 @@ yt2action run --pattern analyze_claims
 
 The pattern output is appended to the Obsidian note under an "## Análisis Profundo" section.
 
+### `yt2action process`
+
+Processes a single video directly. You can pass a video ID, a full YouTube URL, or a 1-based position in your private playlist. You can also pass one or more Fabric patterns to execute.
+
+```bash
+# Process a video by ID
+yt2action process xQuKdFNK7tk
+
+# Process a video by its full YouTube URL
+yt2action process https://www.youtube.com/watch?v=xQuKdFNK7tk
+
+# Process a video and execute a single Fabric pattern
+yt2action process xQuKdFNK7tk --patterns summarize
+
+# Process a video and execute multiple Fabric patterns sequentially
+yt2action process xQuKdFNK7tk --patterns summarize,extract_wisdom
+```
+
+> [!TIP]
+> **Zero-OAuth Setup for Public Videos**: When you process a public video or URL using `yt2action process`, the application automatically uses `yt-dlp` local metadata scraping under the hood. It completely bypasses Google OAuth consent screens, browser requests, and requires **no Google credentials or API keys** to run successfully.
+
+
 ### `yt2action list`
 
 ```bash
@@ -165,6 +188,18 @@ Creates `~/.config/yt2action/config.toml` with default values.
 yt2action health
 # 📋 Super Productivity...
 #    ✅ API responding (port 3876).
+```
+
+### `yt2action sync-patterns`
+
+Synchronizes the official community Fabric patterns directly from Daniel Miessler's GitHub repository (`https://github.com/danielmiessler/fabric`) to your local `~/.config/fabric/patterns/` directory.
+
+```bash
+# Sync patterns (creates directory and downloads if missing)
+yt2action sync-patterns
+
+# Force sync and overwrite existing local patterns with latest updates
+yt2action sync-patterns --force
 ```
 
 ## Configuration
@@ -201,7 +236,7 @@ sp_enabled = false
 
 ### Multiple Playlists (Advanced)
 
-You can monitor multiple playlists and assign specific Fabric patterns, custom Obsidian folders, or Super Productivity projects to each:
+You can monitor multiple playlists and assign specific Fabric patterns, custom Obsidian folders, Super Productivity projects, or transcript token/character size limits to each:
 
 ```toml
 [[youtube.playlists]]
@@ -210,6 +245,7 @@ patterns = ["extract_wisdom", "summarize"]
 obsidian_folder = "Work/Meetings"  # Specific Obsidian folder (bypasses auto-categorization)
 sp_enabled = true
 sp_project_id = "WORK_PROJECT"
+max_transcript_chars = 150000      # Override global limit for long meetings/videos
 
 [[youtube.playlists]]
 id = "PL_personal_learning"
