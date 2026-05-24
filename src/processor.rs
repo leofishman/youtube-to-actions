@@ -211,6 +211,14 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             "temperature": 0.1,
         });
 
+        let body_str = serde_json::to_string(&body).unwrap_or_default();
+        log::info!(
+            "  🤖 Sending request to LLM (Model: {}, URL: {}, Payload size: {} bytes)",
+            self.model,
+            url,
+            body_str.len()
+        );
+
         let mut req = self
             .client
             .post(&url)
@@ -228,7 +236,14 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = format!("{:?}", resp.headers());
             let text = resp.text().await.unwrap_or_default();
+            log::error!("  ❌ LLM request failed!");
+            log::error!("     URL: {url}");
+            log::error!("     Model: {}", self.model);
+            log::error!("     HTTP Status: {status}");
+            log::error!("     Headers: {headers}");
+            log::error!("     Response Body: {text}");
             anyhow::bail!("LLM API error (HTTP {status}): {text}");
         }
 

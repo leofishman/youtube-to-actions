@@ -125,4 +125,5 @@ pub struct ProcessResult {
     pub suggested_action: SuggestedAction,
     pub tags: Vec<String>,
     pub error: Option<String>,
+    pub pattern_execution_times: Vec<(String, String)>,
 }

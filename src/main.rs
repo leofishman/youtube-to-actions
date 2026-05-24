@@ -114,6 +114,7 @@ async fn cmd_run(
     pattern: Option<String>,
     download_video_flag: bool,
 ) -> anyhow::Result<()> {
+    let start_time = std::time::Instant::now();
     let cfg = load_config(config_path)?;
 
     // Check SP is running
@@ -146,7 +147,7 @@ async fn cmd_run(
     let state_path = get_state_path()?;
     let mut state = load_state(&state_path);
 
-    // Collect playlists to process with their SP settings
+    // Collect playlists to process with their SP settings and overrides
     let playlists_to_process: Vec<_> = {
         let mut playlists = Vec::new();
         
@@ -158,6 +159,7 @@ async fn cmd_run(
                 None, // sp_enabled - use global
                 cfg.output.sp_project_id.clone(), // sp_project_id - use global
                 None, // obsidian_folder - use default
+                None, // max_transcript_chars - use global
             ));
         }
         
@@ -169,6 +171,7 @@ async fn cmd_run(
                 p.sp_enabled,
                 p.sp_project_id.clone(),
                 p.obsidian_folder.clone(),
+                p.max_transcript_chars,
             ));
         }
         
@@ -185,7 +188,7 @@ async fn cmd_run(
 
     // Process each playlist
     let mut total_processed = 0;
-    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id, playlist_obsidian_folder) in playlists_to_process {
+    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id, playlist_obsidian_folder, playlist_max_transcript_chars) in playlists_to_process {
         if total_processed >= limit {
             break;
         }
@@ -253,7 +256,7 @@ async fn cmd_run(
             .as_deref()
             .unwrap_or(""),
         valid_folders,
-        cfg.processing.max_transcript_chars,
+        playlist_max_transcript_chars.or(cfg.processing.max_transcript_chars),
     );
 
     // Resolve yt-dlp path and storage config
@@ -306,6 +309,8 @@ async fn cmd_run(
                     playlist_patterns.clone()
                 };
 
+                let mut pattern_execution_times = Vec::new();
+
                 for pattern_name in &patterns_to_run {
                     let patterns_dir = format!(
                         "{}/.config/fabric/patterns",
@@ -313,15 +318,20 @@ async fn cmd_run(
                     );
                     log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
 
-                    match proc
+                    let pattern_start = std::time::Instant::now();
+                    let pattern_res = proc
                         .process_with_pattern(
                             video,
                             transcript_result.transcript.as_deref(),
                             pattern_name,
                             &patterns_dir,
                         )
-                        .await
-                    {
+                        .await;
+
+                    let duration_str = format!("{:.1}s", pattern_start.elapsed().as_secs_f64());
+                    pattern_execution_times.push((pattern_name.clone(), duration_str));
+
+                    match pattern_res {
                         Ok(fabric_output) => {
                             if processed.fabric_output.is_none() {
                                 processed.fabric_output = Some(fabric_output);
@@ -347,6 +357,7 @@ async fn cmd_run(
                     suggested_action: processed.classification.suggested_action.clone(),
                     tags: processed.classification.tags.clone(),
                     error: None,
+                    pattern_execution_times,
                 };
 
                 // Create Obsidian note (primary output)
@@ -461,6 +472,7 @@ async fn cmd_run(
                     suggested_action: types::SuggestedAction::SaveForLater,
                     tags: vec![],
                     error: Some(e.to_string()),
+                    pattern_execution_times: vec![],
                 });
             }
         }
@@ -473,13 +485,13 @@ async fn cmd_run(
     save_state(&state_path, &state)?;
 
     // --- FINAL REPORT ---
-    print_report(&results, &cfg);
+    print_report(&results, &cfg, start_time.elapsed());
 
     Ok(())
 }
 
 /// Print a beautiful summary report after processing
-fn print_report(results: &[ProcessResult], cfg: &Config) {
+fn print_report(results: &[ProcessResult], cfg: &Config, total_duration: std::time::Duration) {
     let _total = results.len();
     let errors: Vec<_> = results.iter().filter(|r| r.error.is_some()).collect();
     let success: Vec<_> = results.iter().filter(|r| r.error.is_none()).collect();
@@ -510,6 +522,12 @@ fn print_report(results: &[ProcessResult], cfg: &Config) {
         if !r.tags.is_empty() {
             println!("     🏷️  {}", r.tags.join(", "));
         }
+        if !r.pattern_execution_times.is_empty() {
+            println!("     🧠  Tiempos de patrones:");
+            for (p_name, duration) in &r.pattern_execution_times {
+                println!("         - {}: {}", p_name, duration);
+            }
+        }
         if let Some(ref err) = r.error {
             println!("     ❌  Error: {err}");
         }
@@ -530,6 +548,14 @@ fn print_report(results: &[ProcessResult], cfg: &Config) {
     if let Some(ref processed_pl) = cfg.youtube.processed_playlist_id {
         println!("  📁  Playlist destino: {processed_pl}");
     }
+    let mins = total_duration.as_secs() / 60;
+    let secs = total_duration.as_secs() % 60;
+    let duration_str = if mins > 0 {
+        format!("{}m {}s", mins, secs)
+    } else {
+        format!("{:.1}s", total_duration.as_secs_f64())
+    };
+    println!("  ⏱️   Tiempo total de ejecución: {duration_str}");
     println!("══════════════════════════════════════════════════════");
     println!();
 }
