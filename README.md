@@ -187,6 +187,9 @@ llm_model = "your-model-name"
 # API key (optional — llama.cpp doesn't need one)
 # llm_api_key = "sk-..."
 
+# Max transcript characters to send to LLM (optional, default: 25000)
+max_transcript_chars = 25000
+
 [output]
 obsidian_vault = "/home/leo/Memory/lenovo1"
 sp_enabled = false
@@ -198,12 +201,13 @@ sp_enabled = false
 
 ### Multiple Playlists (Advanced)
 
-You can monitor multiple playlists and assign specific Fabric patterns or Super Productivity projects to each:
+You can monitor multiple playlists and assign specific Fabric patterns, custom Obsidian folders, or Super Productivity projects to each:
 
 ```toml
 [[youtube.playlists]]
 id = "PL_work_related_playlist"
 patterns = ["extract_wisdom", "summarize"]
+obsidian_folder = "Work/Meetings"  # Specific Obsidian folder (bypasses auto-categorization)
 sp_enabled = true
 sp_project_id = "WORK_PROJECT"
 
@@ -213,7 +217,7 @@ patterns = ["summarize"]
 sp_enabled = false # Override global sp_enabled for this playlist
 ````
 
-Playlist-specific settings (`sp_enabled`, `sp_project_id`) override the global defaults in the `[output]` section.
+Playlist-specific settings (`sp_enabled`, `sp_project_id`, `obsidian_folder`) override the global defaults in the `[output]` section.
 
 ````
 

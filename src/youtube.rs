@@ -200,7 +200,7 @@ impl YoutubeClient {
         for chunk in videos.chunks_mut(50) {
             let ids: Vec<&str> = chunk.iter().map(|v| v.id.as_str()).collect();
             let url = format!(
-                "https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id={}",
+                "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id={}",
                 ids.join(",")
             );
 
@@ -225,6 +225,7 @@ impl YoutubeClient {
                     let like_count = stats["likeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
                     let dislike_count = stats["dislikeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
                     let comment_count = stats["commentCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+                    let published_at = item["snippet"]["publishedAt"].as_str();
 
                     if let Some(v) = chunk.iter_mut().find(|v| v.id == vid) {
                         v.duration_seconds = Some(parse_iso8601_duration(d));
@@ -232,6 +233,9 @@ impl YoutubeClient {
                         v.like_count = like_count;
                         v.dislike_count = dislike_count;
                         v.comment_count = comment_count;
+                        if let Some(pub_at) = published_at {
+                            v.published_at = pub_at.to_string();
+                        }
                     }
                 }
             }
