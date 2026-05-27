@@ -186,7 +186,11 @@ RULES:
 - summary: In Spanish, concise but informative
 - key_points: 3-7 bullet points of actionable takeaways
 - category: tutorial=how-to, news=current events, concept=theoretical/thematic, entertainment=fun, tool=software/product/service, health=wellness/nutrition/fitness/medicine
-- tags: Short keywords relevant to content (e.g. ["rust", "api", "backend"])
+- tags: Up to 5 specific, high-quality lowercase keywords in Spanish or English relevant to the content. Follow Obsidian best practices:
+  1. Prefer singular over plural (e.g., use "receta" instead of "recetas", "herramienta" instead of "herramientas").
+  2. If a tag contains multiple words, join them with a hyphen (e.g., "desarrollo-web", "inteligencia-artificial").
+  3. Do not include spaces, punctuation, or special characters.
+  4. Never use purely numerical tags (e.g., use "año-2026" instead of "2026").
 - suggested_action: archive=just note it, read_transcript=summary enough, watch_full=need to see it, save_for_later=interesting but not urgent
 - target_folder: Choose the BEST folder based on the video TITLE, DESCRIPTION, and TRANSCRIPT. Read the content and decide what category it belongs to.
 
@@ -328,6 +332,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             .map(|arr| {
                 arr.iter()
                     .map(|v| v.as_str().unwrap_or("").to_string())
+                    .filter_map(|t| sanitize_tag(&t))
                     .collect()
             })
             .unwrap_or_default();
@@ -408,4 +413,45 @@ impl Default for ParsedOutput {
             },
         }
     }
+}
+
+/// Sanitizes a string tag to be valid in Obsidian:
+/// - Converts to lowercase and trims whitespace
+/// - Replaces spaces/invalid punctuation with a single hyphen (-)
+/// - Allows only alphanumeric characters, underscores (_), and forward slashes (/)
+/// - Ensures it has at least one non-numerical character (prepends "tag" if numeric only)
+fn sanitize_tag(tag: &str) -> Option<String> {
+    let cleaned = tag.trim().to_lowercase();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let mut sanitized = String::new();
+    let mut last_was_dash = false;
+    for c in cleaned.chars() {
+        if c.is_alphanumeric() || c == '_' || c == '/' {
+            sanitized.push(c);
+            last_was_dash = false;
+        } else if c == ' ' || c == '-' || c.is_ascii_punctuation() {
+            if !last_was_dash && !sanitized.is_empty() {
+                sanitized.push('-');
+                last_was_dash = true;
+            }
+        }
+    }
+
+    let mut final_tag = sanitized
+        .trim_matches(|c| c == '-' || c == '/' || c == '_')
+        .to_string();
+
+    if final_tag.is_empty() {
+        return None;
+    }
+
+    // Obsidian tags cannot be purely numeric (e.g. #2026)
+    if final_tag.chars().all(|c| c.is_ascii_digit()) {
+        final_tag = format!("tag{}", final_tag);
+    }
+
+    Some(final_tag)
 }
