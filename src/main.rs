@@ -941,11 +941,13 @@ async fn cmd_process(
             }
 
             // Create Obsidian note
+            let mut note_path = None;
             if let Some(ref vault) = cfg.output.obsidian_vault {
                 let vault_path = PathBuf::from(vault);
                 match obsidian::create_note(&vault_path, &processed, None) {
                     Ok(path) => {
                         log::info!("  📝 Note created: {:?}", path);
+                        note_path = Some(path.to_string_lossy().to_string());
                     }
                     Err(e) => {
                         log::error!("  ❌ Failed to create note: {e}");
@@ -961,7 +963,11 @@ async fn cmd_process(
             println!("══════════════════════════════════════════════════════");
             println!("  ✅ PROCESAMIENTO EXITOSO");
             println!("══════════════════════════════════════════════════════");
-            println!("  📝  Categoría: {}", processed.target_folder);
+            if let Some(ref path) = note_path {
+                println!("  📝  Nota: {}", path);
+            } else {
+                println!("  📝  Categoría: {}", processed.target_folder);
+            }
             println!("  🔗  https://youtube.com/watch?v={}", video.id);
             println!("  🏷️  {}", processed.classification.tags.join(", "));
             println!("  💡  {}", processed.classification.suggested_action);
