@@ -23,8 +23,12 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 
 ## 🛠️ Mejoras y Estabilidad
 
-### 2. Soporte para Múltiples Bóvedas de Obsidian (Vaults) 🏛️
+### 2. Soporte para Múltiples Bóvedas de Obsidian (Vaults) 🏛️ (Completado)
 *   **Descripción:** Permitir que cada playlist especifique un path de vault distinto si es necesario (`obsidian_vault` a nivel de playlist).
+*   **Implementación:**
+    *   Agregado `pub obsidian_vault: Option<String>` a `PlaylistPatternConfig` en `src/config.rs`.
+    *   En `cmd_run` en `src/main.rs`, capturamos el vault configurado para la playlist (`playlist_obsidian_vault`).
+    *   Se utiliza para crear la nota en la bóveda específica, con fallback automático al path global (`obsidian_vault` bajo `[output]`) si no está definido.
 
 ### 3. Fallback inteligente de descargas de Video 🔄
 *   **Descripción:** Si `yaydl` falla catastróficamente (exit status 101) al intentar descargar un video y `--download-video` está activo, hacer un fallback automático a `yt-dlp` usando cookies del navegador para evitar bloqueos.

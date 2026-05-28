@@ -36,6 +36,8 @@ pub struct PlaylistPatternConfig {
     pub sp_project_id: Option<String>,
     /// Target Obsidian folder for this playlist (e.g. "Proyectos/Rust")
     pub obsidian_folder: Option<String>,
+    /// Target Obsidian vault path for this playlist (overrides global obsidian_vault)
+    pub obsidian_vault: Option<String>,
     /// Max transcript characters for this playlist (overrides global max_transcript_chars)
     pub max_transcript_chars: Option<usize>,
 }

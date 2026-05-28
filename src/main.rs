@@ -164,6 +164,7 @@ async fn cmd_run(
                 None, // sp_enabled - use global
                 cfg.output.sp_project_id.clone(), // sp_project_id - use global
                 None, // obsidian_folder - use default
+                None, // obsidian_vault - use default
                 None, // max_transcript_chars - use global
             ));
         }
@@ -176,6 +177,7 @@ async fn cmd_run(
                 p.sp_enabled,
                 p.sp_project_id.clone(),
                 p.obsidian_folder.clone(),
+                p.obsidian_vault.clone(),
                 p.max_transcript_chars,
             ));
         }
@@ -193,7 +195,7 @@ async fn cmd_run(
 
     // Process each playlist
     let mut total_processed = 0;
-    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id, playlist_obsidian_folder, playlist_max_transcript_chars) in playlists_to_process {
+    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id, playlist_obsidian_folder, playlist_obsidian_vault, playlist_max_transcript_chars) in playlists_to_process {
         if total_processed >= limit {
             break;
         }
@@ -366,7 +368,8 @@ async fn cmd_run(
                 };
 
                 // Create Obsidian note (primary output)
-                if let Some(ref vault) = cfg.output.obsidian_vault {
+                let active_vault = playlist_obsidian_vault.as_ref().or(cfg.output.obsidian_vault.as_ref());
+                if let Some(ref vault) = active_vault {
                     let vault_path = PathBuf::from(vault);
                     match obsidian::create_note(&vault_path, &processed, playlist_obsidian_folder.as_deref()) {
                         Ok(path) => {
