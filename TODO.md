@@ -30,8 +30,17 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
     *   En `cmd_run` en `src/main.rs`, capturamos el vault configurado para la playlist (`playlist_obsidian_vault`).
     *   Se utiliza para crear la nota en la bóveda específica, con fallback automático al path global (`obsidian_vault` bajo `[output]`) si no está definido.
 
-### 3. Fallback inteligente de descargas de Video 🔄
-*   **Descripción:** Si `yaydl` falla catastróficamente (exit status 101) al intentar descargar un video y `--download-video` está activo, hacer un fallback automático a `yt-dlp` usando cookies del navegador para evitar bloqueos.
+### 3. Fallback inteligente de descargas de Video 🔄 (Completado)
+*   **Descripción:** Si `yaydl` falla al intentar descargar un video y `--download-video` está activo, hacer un fallback automático en cascada a `yt-dlp` usando cookies del navegador para evitar bloqueos y censuras.
+*   **Implementación:**
+    *   Modificado `download_actual_video` en `src/downloader.rs` para capturar cualquier falla de `yaydl` (sea por exit status no exitoso, fallas de ejecución o ausencia de binario).
+    *   **Estrategia de Cascada:**
+        1.  **yt-dlp con cookies de Firefox:** Si `yaydl` falla, intenta descargar mediante `yt-dlp` utilizando las cookies del perfil de Firefox (`--cookies-from-browser firefox`).
+        2.  **yt-dlp con cookies de Chrome:** Si el intento anterior falla, intenta descargar mediante `yt-dlp` utilizando cookies de Chrome (`--cookies-from-browser chrome`).
+        3.  **yt-dlp sin cookies:** Si todo lo anterior falla, intenta descargar directamente mediante `yt-dlp` sin cookies.
+    *   Este esquema en cascada garantiza la mayor resiliencia y probabilidad de descarga frente a restricciones y bloqueos de la plataforma.
+
+---
 
 ### 4. Modo Concurrente Limitado ⚡
 *   **Descripción:** Permitir procesar videos de forma concurrente pero con un limitador estricto (por ejemplo, máx. 2 descargas/análisis a la vez) para no disparar alertas de spam en YouTube o el LLM.
