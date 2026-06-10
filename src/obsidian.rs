@@ -7,15 +7,21 @@ pub fn create_note(
     vault_path: &Path,
     processed: &ProcessedVideo,
     folder_override: Option<&str>,
+    dry_run: bool,
 ) -> Result<std::path::PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let filename = format!("{}.md", slugify(&processed.video.title));
     let folder = folder_override.unwrap_or(&processed.target_folder);
     let dir = vault_path.join(folder);
+    let path = dir.join(&filename);
+
+    if dry_run {
+        log::info!("  📝 [Simulado] Note would be created at: {:?}", path);
+        return Ok(path);
+    }
+
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create directory: {:?}", dir))?;
-
-    let path = dir.join(&filename);
 
     let duration = match processed.video.duration_seconds {
         Some(s) if s > 3600 => format!("{:.1}h", s as f64 / 3600.0),
