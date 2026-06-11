@@ -2,6 +2,7 @@ mod config;
 mod downloader;
 mod obsidian;
 mod processor;
+mod security;
 mod sp_api;
 mod types;
 mod youtube;

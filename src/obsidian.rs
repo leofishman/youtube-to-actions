@@ -37,8 +37,17 @@ pub fn create_note(
         .map(|p| format!("**Video local:** `{}`", p))
         .unwrap_or_default();
 
-    // Escape title for YAML (replace " with \")
-    let escaped_title = processed.video.title.replace('"', "\\\"");
+    // Escape variables for YAML frontmatter
+    let escaped_title = crate::security::escape_yaml(&processed.video.title);
+    let escaped_channel = crate::security::escape_yaml(&processed.video.channel);
+    let escaped_category = crate::security::escape_yaml(&format!("{:?}", processed.classification.category));
+    let escaped_tags = processed
+        .classification
+        .tags
+        .iter()
+        .map(|t| format!("\"{}\"", crate::security::escape_yaml(t)))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     // Extract published date part (YYYY-MM-DD)
     let published_at = if processed.video.published_at.len() >= 10 {
@@ -52,27 +61,31 @@ pub fn create_note(
     let dislikes = processed.video.dislike_count.unwrap_or(0);
     let comments = processed.video.comment_count.unwrap_or(0);
 
+    // Strip HTML from title, channel and local link to prevent malicious formatting
+    let title_stripped = crate::security::strip_html(&processed.video.title);
+    let channel_stripped = crate::security::strip_html(&processed.video.channel);
+
     let mut content = format!(
         r#"---
 title: "{escaped_title}"
 url: https://youtube.com/watch?v={id}
-channel: "{channel}"
+channel: "{escaped_channel}"
 duration: {duration}
 published: {published_at}
 date_added: {date}
-category: {category}
-tags: [{tags}]
+category: {escaped_category}
+tags: [{escaped_tags}]
 views: {views}
 likes: {likes}
 dislikes: {dislikes}
 comments: {comments}
 ---
 
-# {title}
+# {title_stripped}
 
 [![Poster](https://img.youtube.com/vi/{id}/maxresdefault.jpg)](https://youtube.com/watch?v={id})
 
-**Canal:** {channel}
+**Canal:** {channel_stripped}
 **Duración:** {duration}
 **Publicado:** {published_at}
 **Link:** https://youtube.com/watch?v={id}
@@ -88,23 +101,17 @@ comments: {comments}
 {key_points}
 "#,
         escaped_title = escaped_title,
-        title = processed.video.title,
+        escaped_channel = escaped_channel,
+        escaped_category = escaped_category,
+        escaped_tags = escaped_tags,
+        title_stripped = title_stripped,
         id = processed.video.id,
-        channel = processed.video.channel,
+        channel_stripped = channel_stripped,
         duration = duration,
         published_at = published_at,
         date = date,
-        category = format!("{:?}", processed.classification.category),
-        tags = processed
-            .classification
-            .tags
-            .iter()
-            .map(|t| format!("\"{}\"", t))
-            .collect::<Vec<_>>()
-            .join(", "),
         views = views,
         likes = likes,
-        dislikes = dislikes,
         comments = comments,
         local_link = local_link,
         summary = processed.summary,
@@ -119,17 +126,22 @@ comments: {comments}
     // Append Fabric pattern analysis if available
     if let Some(ref fabric_output) = processed.fabric_output {
         let cleaned = fabric_output.replace("INPUT:\n", "").replace("INPUT:", "");
-        content.push_str(&format!("\n## Análisis Profundo\n\n{cleaned}\n"));
+        // Strip HTML tags from Fabric pattern output to prevent injection
+        let cleaned_stripped = crate::security::strip_html(&cleaned);
+        content.push_str(&format!("\n## Análisis Profundo\n\n{cleaned_stripped}\n"));
     }
 
-    // Transcript section
+    // Transcript section (HTML stripped to prevent script/iframe execution in Obsidian)
     let transcript_text = match processed.transcript.as_ref() {
-        Some(t) => t
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(" "),
+        Some(t) => {
+            let stripped = crate::security::strip_html(t);
+            stripped
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
         None => "No disponible — el video no tenía subtítulos.".to_string(),
     };
 
