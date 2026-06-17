@@ -224,8 +224,40 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
         ]
     }
 
-    /// Call OpenAI-compatible /v1/chat/completions endpoint (like llama.cpp)
+    /// Call OpenAI-compatible /v1/chat/completions endpoint with retry logic.
+    /// Retries up to 3 times with exponential backoff (2s, 4s, 8s) for transient errors.
     async fn call_llm(&self, messages: &[Value]) -> Result<String> {
+        let max_retries: u32 = 3;
+
+        for attempt in 0..=max_retries {
+            match self.try_call_llm(messages).await {
+                Ok(response) => return Ok(response),
+                Err(e) if attempt < max_retries => {
+                    let delay = std::time::Duration::from_secs(2u64.pow(attempt + 1));
+                    log::warn!(
+                        "  ⚠️ LLM attempt {}/{} failed: {}. Retrying in {:?}...",
+                        attempt + 1,
+                        max_retries,
+                        e,
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => {
+                    log::error!(
+                        "  ❌ LLM failed after {} attempts. Last error: {}",
+                        max_retries + 1,
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    /// Single attempt to call the LLM API (used by call_llm retry wrapper).
+    async fn try_call_llm(&self, messages: &[Value]) -> Result<String> {
         let url = format!("{}/v1/chat/completions", self.base_url);
 
         let body = serde_json::json!({

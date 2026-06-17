@@ -38,27 +38,37 @@ pub async fn download_video(
     let transcript_path = video_dir.join("transcript.txt");
     let transcript_str = transcript_path.to_string_lossy().to_string();
 
-    let mut ytt_cmd = std::process::Command::new("ytt");
-    ytt_cmd.arg(video_id);
-    
-    // Add each language as a separate -l argument
-    for lang in subtitle_langs {
-        ytt_cmd.arg("-l").arg(lang);
-    }
+    // Cache check: skip download if transcript already exists and is non-empty
+    let transcript_cached = transcript_path.exists()
+        && std::fs::metadata(&transcript_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
 
-    let sub_output = ytt_cmd
-        .args(["-f", "text"])
-        .args(["-o", &transcript_str])
-        .output()
-        .context("Failed to execute ytt for transcript")?;
+    if transcript_cached {
+        log::info!("  📄 Transcript cache hit: {:?}", transcript_path);
+    } else {
+        let mut ytt_cmd = std::process::Command::new("ytt");
+        ytt_cmd.arg(video_id);
 
-    if !sub_output.status.success() {
-        let sub_stderr = String::from_utf8_lossy(&sub_output.stderr);
-        log::warn!(
-            "ytt transcript download exited with {}: {}",
-            sub_output.status,
-            sub_stderr.trim()
-        );
+        // Add each language as a separate -l argument
+        for lang in subtitle_langs {
+            ytt_cmd.arg("-l").arg(lang);
+        }
+
+        let sub_output = ytt_cmd
+            .args(["-f", "text"])
+            .args(["-o", &transcript_str])
+            .output()
+            .context("Failed to execute ytt for transcript")?;
+
+        if !sub_output.status.success() {
+            let sub_stderr = String::from_utf8_lossy(&sub_output.stderr);
+            log::warn!(
+                "ytt transcript download exited with {}: {}",
+                sub_output.status,
+                sub_stderr.trim()
+            );
+        }
     }
 
     // Step 2: Download video (if requested)

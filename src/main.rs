@@ -837,7 +837,14 @@ fn load_state(path: &PathBuf) -> types::ProcessState {
 
 fn save_state(path: &PathBuf, state: &types::ProcessState) -> anyhow::Result<()> {
     let content = serde_json::to_string_pretty(state)?;
-    std::fs::write(path, &content)?;
+    // Atomic write: write to temp file first, then rename.
+    // rename() is atomic on Linux (ext4/btrfs), so if the process crashes
+    // mid-write, the original state.json remains intact.
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &content)
+        .with_context(|| format!("Failed to write temp state file: {:?}", tmp_path))?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("Failed to rename temp state to: {:?}", path))?;
     Ok(())
 }
 
