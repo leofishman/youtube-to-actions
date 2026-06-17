@@ -11,7 +11,18 @@ pub fn create_note(
 ) -> Result<std::path::PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let filename = format!("{}.md", slugify(&processed.video.title));
-    let folder = folder_override.unwrap_or(&processed.target_folder);
+    let raw_folder = folder_override.unwrap_or(&processed.target_folder);
+
+    // Defense-in-depth: reject path traversal attempts in target_folder
+    let folder = if raw_folder.contains("..") || raw_folder.starts_with('/') {
+        log::warn!(
+            "Suspicious target_folder detected: '{}'. Using fallback 'Resources/YouTube'.",
+            raw_folder
+        );
+        "Resources/YouTube"
+    } else {
+        raw_folder
+    };
     let dir = vault_path.join(folder);
     let path = dir.join(&filename);
 
@@ -114,11 +125,12 @@ comments: {comments}
         likes = likes,
         comments = comments,
         local_link = local_link,
-        summary = processed.summary,
+        // Sanitize LLM-generated content to prevent indirect prompt injection
+        summary = crate::security::sanitize_for_obsidian(&processed.summary),
         key_points = processed
             .key_points
             .iter()
-            .map(|p| format!("- {p}"))
+            .map(|p| format!("- {}", crate::security::sanitize_for_obsidian(p)))
             .collect::<Vec<_>>()
             .join("\n"),
     );
@@ -126,9 +138,9 @@ comments: {comments}
     // Append Fabric pattern analysis if available
     if let Some(ref fabric_output) = processed.fabric_output {
         let cleaned = fabric_output.replace("INPUT:\n", "").replace("INPUT:", "");
-        // Strip HTML tags from Fabric pattern output to prevent injection
-        let cleaned_stripped = crate::security::strip_html(&cleaned);
-        content.push_str(&format!("\n## Análisis Profundo\n\n{cleaned_stripped}\n"));
+        // Sanitize Fabric output for Obsidian (HTML + wikilinks + URIs + code fences)
+        let cleaned_sanitized = crate::security::sanitize_for_obsidian(&cleaned);
+        content.push_str(&format!("\n## Análisis Profundo\n\n{cleaned_sanitized}\n"));
     }
 
     // Transcript section (HTML stripped to prevent script/iframe execution in Obsidian)

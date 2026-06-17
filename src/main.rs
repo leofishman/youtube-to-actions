@@ -423,14 +423,14 @@ async fn cmd_run(
                         }
                     };
 
-                    let title = format!("[📺] {}", processed.video.title);
+                    let title = format!("[📺] {}", security::strip_html(&processed.video.title));
                     let notes = format!(
                         "{}\n\n## Puntos clave\n{}\n\n🔗 https://youtube.com/watch?v={}",
-                        processed.summary,
+                        security::strip_html(&processed.summary),
                         processed
                             .key_points
                             .iter()
-                            .map(|p| format!("- {p}"))
+                            .map(|p| format!("- {}", security::strip_html(p)))
                             .collect::<Vec<_>>()
                             .join("\n"),
                         processed.video.id
