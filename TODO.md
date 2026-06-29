@@ -61,9 +61,9 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 *   **Descripción:** Añadir un mensaje de log explícito que indique qué patrón de Fabric se está ejecutando para analizar el video.
 *   **Implementación:** Agregado un log descriptivo antes de ejecutar `process_with_pattern` en `main.rs`.
 
-### 7. Log temporal de salidas de patrones de Fabric 📝 (Para Mañana / Pendiente)
+### 7. Log temporal de salidas de patrones de Fabric 📝 (Completado)
 *   **Descripción:** Durante el desarrollo, guardar las salidas crudas de cada patrón de Fabric que se ejecuta en un archivo de log temporal (por ejemplo, en `target/fabric_outputs_temp.log` o un directorio de logs) para poder inspeccionar los resultados de cada análisis sin tener que esperar a que se cree la nota de Obsidian o en caso de que ocurra algún fallo intermedio.
-*   **Plan:** Crear una utilidad sencilla que escriba las respuestas del LLM directamente en un archivo log plano inmediatamente después de cada ejecución exitosa de un patrón.
+*   **Implementación:** Agregada la función `log_fabric_output_temp` en `src/main.rs` que escribe inmediatamente las respuestas del LLM a `target/fabric_outputs_temp.log` después de la ejecución exitosa de cada patrón.
 
 ### 8. Optimización de patrones de Fabric para LLM local ⚡ (Para Mañana / Pendiente)
 *   **Descripción:** Documentar o automatizar la optimización de los system prompts de patrones de Fabric pesados (como `extract_wisdom`) para el entorno local. Los system prompts originales exigen una cantidad inmensa de tokens generados, lo que demora más de 7 minutos en modelos locales como Qwen 35B.
@@ -127,11 +127,16 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 
 ## 🖥️ Experiencia de Usuario (CLI) y Logging
 
-### 15. Modo Simulación (`--dry-run`)
+### 15. Modo Simulación (`--dry-run`) (Completado)
 *   **Descripción:** Añadir un flag `--dry-run` a `yt2action run`. Ejecutaría la extracción y la clasificación de IA, informando por pantalla de las acciones a tomar (crear nota, asignar tarea, mover en playlist) sin ejecutar realmente la escritura ni alterar el estado. Útil para testear prompts y settings.
+*   **Implementación:** Agregado el flag `--dry-run` en `run` y `process`. Se propaga a la creación de notas en `obsidian.rs`, a las tareas en `sp_api.rs`, al movimiento de playlists y al guardado del archivo de estado.
 
-### 16. Comandos de Gestión de Estado (`state`)
+### 16. Comandos de Gestión de Estado (`state`) (Completado)
 *   **Descripción:** Añadir subcomandos para gestionar el historial sin editar el JSON: `yt2action state show`, `yt2action state reset` y `yt2action state unmark <video_id>`.
+*   **Implementación:** Agregados subcomandos de `state` en `src/main.rs`:
+    *   `yt2action state show`: Muestra la lista completa de URLs de videos procesados.
+    *   `yt2action state reset`: Borra todo el historial con confirmación interactiva (`--force` para omitir).
+    *   `yt2action state unmark <video>`: Remueve un video específico por ID o URL de YouTube del historial de procesados.
 
 ### 17. Progreso y Feedback Visual (UI/UX)
 *   **Descripción:** Cuando se ejecuta la herramienta de forma manual, mostrar barras de progreso elegantes (usando crates como `indicatif`), especialmente útil cuando se procesan listas con múltiples videos.

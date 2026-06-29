@@ -96,6 +96,28 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+    /// Manage local processed video state/history
+    State {
+        #[command(subcommand)]
+        subcommand: StateSubcommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum StateSubcommands {
+    /// Show all processed video IDs in local state
+    Show,
+    /// Clear the entire processed history
+    Reset {
+        /// Force reset without confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Unmark a specific video ID (remove it from processed history)
+    Unmark {
+        /// Video ID or YouTube URL to remove
+        video: String,
+    },
 }
 
 #[tokio::main]
@@ -121,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
             cmd_process(video, config, patterns, download_video, dry_run).await
         }
         Commands::SyncPatterns { force } => cmd_sync_patterns(force).await,
+        Commands::State { subcommand } => cmd_state(subcommand).await,
     }
 }
 
@@ -1134,6 +1157,52 @@ async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
 
     println!("✅ ¡Sincronización completada con éxito!");
     println!("   Los patrones de Fabric están listos en {:?}", target_dir);
+
+    Ok(())
+}
+
+async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
+    let state_path = get_state_path()?;
+    let mut state = load_state(&state_path);
+
+    match subcommand {
+        StateSubcommands::Show => {
+            if state.processed_ids.is_empty() {
+                println!("No hay videos registrados en el historial de procesados.");
+            } else {
+                println!("Historial de videos procesados ({} total):", state.processed_ids.len());
+                for id in &state.processed_ids {
+                    println!("  - https://youtube.com/watch?v={}", id);
+                }
+            }
+        }
+        StateSubcommands::Reset { force } => {
+            if !force {
+                print!("¿Estás seguro de que quieres borrar todo el historial? (s/N): ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if input.trim().to_lowercase() != "s" {
+                    println!("Operación cancelada.");
+                    return Ok(());
+                }
+            }
+            state.processed_ids.clear();
+            save_state(&state_path, &state)?;
+            println!("✅ Historial de videos procesados borrado con éxito.");
+        }
+        StateSubcommands::Unmark { video } => {
+            let id = extract_video_id(&video);
+            if state.is_processed(&id) {
+                state.processed_ids.retain(|x| x != &id);
+                save_state(&state_path, &state)?;
+                println!("✅ Video {} eliminado del historial de procesados.", id);
+            } else {
+                println!("⚠️ El video {} no se encuentra en el historial de procesados.", id);
+            }
+        }
+    }
 
     Ok(())
 }
