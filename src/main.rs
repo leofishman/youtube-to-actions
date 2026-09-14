@@ -741,6 +741,13 @@ async fn cmd_health() -> anyhow::Result<()> {
         Ok(false) => println!("   ❌ API not ready."),
         Err(e) => println!("   ❌ Not running: {e}"),
     }
+    // /health no pide token: responde OK aunque no podamos crear ni una tarea.
+    // Desde SP v19 el resto de la API es Bearer, así que el health check tiene que
+    // tocar una ruta autenticada o no detecta el único modo de falla que importa.
+    match sp.list_projects().await {
+        Ok(projects) => println!("   ✅ Autenticado ({} proyectos visibles).", projects.len()),
+        Err(e) => println!("   ❌ Sin autenticación: {e}"),
+    }
 
     Ok(())
 }
