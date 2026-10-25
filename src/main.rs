@@ -387,24 +387,48 @@ async fn cmd_run(
                     pattern_errors,
                 };
 
-                // Nota en Obsidian (salida principal) + marca en el estado. Si la nota
-                // falla, el video queda como error: sin tarea, sin mover y sin marcar.
+                // Nota en Obsidian (salida principal), marca en el estado y mover de
+                // playlist. Si la nota falla, el video queda como error: sin tarea, sin
+                // mover y sin marcar.
                 let active_vault = playlist_obsidian_vault
                     .as_ref()
                     .or(cfg.output.obsidian_vault.as_ref())
                     .map(PathBuf::from);
-                match record_note(
+                // Mover a la playlist de procesados, si hay una configurada
+                let move_video = async || -> anyhow::Result<bool> {
+                    let Some(processed_pl) = cfg.youtube.processed_playlist_id.as_ref() else {
+                        return Ok(false);
+                    };
+                    if dry_run {
+                        log::info!("  ✅ [Simulado] Video would be moved to processed playlist: {processed_pl}");
+                        return Ok(true);
+                    }
+                    yt.add_to_playlist(processed_pl, &video.id)
+                        .await
+                        .context("Could not add to processed playlist")?;
+                    yt.remove_from_playlist(&video.playlist_item_id)
+                        .await
+                        .context("Added to processed playlist but could not remove from source")?;
+                    log::info!("  ✅ Moved to processed playlist: {processed_pl}");
+                    Ok(true)
+                };
+                match finish_video(
                     active_vault.as_deref(),
                     &processed,
                     playlist_obsidian_folder.as_deref(),
                     dry_run,
                     &mut state,
                     &state_path,
-                    cfg.youtube.processed_playlist_id.is_none(),
-                ) {
-                    Ok(path) => result.note_path = path.map(|p| p.to_string_lossy().to_string()),
+                    move_video,
+                )
+                .await
+                {
+                    Ok((path, moved)) => {
+                        result.note_path = path.map(|p| p.to_string_lossy().to_string());
+                        result.moved_to_processed = moved;
+                    }
                     Err(e) => {
-                        log::error!("  ❌ Failed to create note: {e:#}");
+                        log::error!("  ❌ Nota o estado fallaron, el video no queda procesado: {e:#}");
                         result.error = Some(format!("{e:#}"));
                         results.push(result);
                         continue;
@@ -460,42 +484,6 @@ async fn cmd_run(
                                 log::info!("  ✅ Task created: {id}");
                             }
                             Err(e) => log::error!("  ❌ Failed to create task: {e}"),
-                        }
-                    }
-                }
-
-                // Post-processing: move video to processed playlist
-                if let Some(ref processed_pl) = cfg.youtube.processed_playlist_id {
-                    if dry_run {
-                        result.moved_to_processed = true;
-                        log::info!("  ✅ [Simulado] Video would be moved to processed playlist: {processed_pl}");
-                    } else {
-                        match yt
-                            .add_to_playlist(processed_pl, &video.id)
-                            .await
-                        {
-                            Ok(_new_item_id) => {
-                                // Remove from source playlist
-                                match yt.remove_from_playlist(&video.playlist_item_id).await {
-                                    Ok(()) => {
-                                        result.moved_to_processed = true;
-                                        log::info!(
-                                            "  ✅ Moved to processed playlist: {processed_pl}"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "  ⚠️ Added to processed playlist but could not \
-                                             remove from source: {e}"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "  ⚠️ Could not add to processed playlist: {e}"
-                                );
-                            }
                         }
                     }
                 }
@@ -1031,9 +1019,11 @@ async fn cmd_process(
 
             // Nota + estado. Si la nota falla: error, sin marcar ni imprimir éxito.
             let vault = cfg.output.obsidian_vault.as_ref().map(PathBuf::from);
-            let note_path = record_note(vault.as_deref(), &processed, None, dry_run, &mut state, &state_path, true)
-                .context("No se pudo crear la nota; el video no se marcó como procesado")?
-                .map(|p| p.to_string_lossy().to_string());
+            let (note_path, _) =
+                finish_video(vault.as_deref(), &processed, None, dry_run, &mut state, &state_path, async || Ok(false))
+                    .await
+                    .context("No se pudo crear la nota; el video no se marcó como procesado")?;
+            let note_path = note_path.map(|p| p.to_string_lossy().to_string());
 
             // Print report
             println!("══════════════════════════════════════════════════════");
@@ -1126,31 +1116,38 @@ async fn run_patterns(
     (times, errors)
 }
 
-/// Nota en Obsidian y marca en el estado, compartido por `run` y `process`.
-/// Si la nota falla devuelve error sin marcar (auditoría #2).
-fn record_note(
+/// Cierre de un video ya analizado, compartido por `run` y `process`: nota en
+/// Obsidian, marca en el estado (guardada) y mover de playlist. Si la nota falla
+/// devuelve error sin marcar (auditoría #2). Devuelve la nota y si se movió.
+async fn finish_video(
     vault: Option<&std::path::Path>,
     processed: &types::ProcessedVideo,
     folder: Option<&str>,
     dry_run: bool,
     state: &mut types::ProcessState,
     state_path: &std::path::Path,
-    mark: bool,
-) -> anyhow::Result<Option<PathBuf>> {
+    move_video: impl AsyncFnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<(Option<PathBuf>, bool)> {
     let note = match vault {
         Some(vault) => Some(obsidian::create_note(vault, processed, folder, dry_run)?),
         None => None,
     };
-    if mark {
-        if dry_run {
-            log::info!("  💾 [Simulado] Video would be marked as processed in local state");
-        } else {
-            // Se guarda por video: un corte a mitad del run no pierde lo hecho (auditoría #6)
-            state.mark_processed(processed.video.id.clone());
-            save_state(state_path, state)?;
-        }
+    // Se marca y guarda siempre, por video (auditoría #6) y ANTES de mover: si el
+    // add/remove de playlist falla, el video no queda para reprocesar (auditoría #9).
+    if dry_run {
+        log::info!("  💾 [Simulado] Video would be marked as processed in local state");
+    } else {
+        state.mark_processed(processed.video.id.clone());
+        save_state(state_path, state)?;
     }
-    Ok(note)
+    let moved = match move_video().await {
+        Ok(moved) => moved,
+        Err(e) => {
+            log::warn!("  ⚠️ {e:#}");
+            false
+        }
+    };
+    Ok((note, moved))
 }
 
 async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
@@ -1314,13 +1311,13 @@ mod tests {
     use types::test_util::{processed_video, tmp_dir};
 
     // Auditoría #2: si la nota no se puede escribir, el video no queda procesado.
-    #[test]
-    fn nota_fallida_no_marca_procesado() {
+    #[tokio::test]
+    async fn nota_fallida_no_marca_procesado() {
         let dir = tmp_dir("nota-fallida");
         let vault = dir.join("vault");
         std::fs::write(&vault, "un archivo, no un directorio").unwrap();
         let mut state = types::ProcessState::new();
-        let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), true);
+        let r = finish_video(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), async || Ok(false)).await;
         assert!(r.is_err(), "la nota falló: no es éxito");
         assert!(!state.is_processed("abc"));
     }
@@ -1333,6 +1330,34 @@ mod tests {
         let e = load_state(&path).expect_err("corrupto no es un estado vacío");
         assert!(format!("{e:#}").contains("state.json"), "{e:#}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"processed_ids\": [\"a\", ");
+    }
+
+    // Auditoría #9: con playlist de procesados, el estado se marca y guarda ANTES de
+    // mover, y un add/remove fallido no deja el video para reprocesar.
+    #[tokio::test]
+    async fn con_playlist_de_procesados_marca_antes_de_mover() {
+        let dir = tmp_dir("mover");
+        let state_path = dir.join("state.json");
+        let mut state = types::ProcessState::new();
+        let sp = state_path.clone();
+        let r = finish_video(
+            Some(&dir.join("vault")),
+            &processed_video("abc", "T"),
+            None,
+            false,
+            &mut state,
+            &state_path,
+            async || {
+                let on_disk = std::fs::read_to_string(&sp).unwrap_or_default();
+                anyhow::ensure!(on_disk.contains("abc"), "se movió sin marcar antes");
+                anyhow::bail!("add_to_playlist falló")
+            },
+        )
+        .await;
+        let (_, moved) = r.expect("un fallo al mover no es un fallo del video");
+        assert!(!moved);
+        assert!(state.is_processed("abc"), "sin marca, el próximo run lo reprocesa");
+        assert!(std::fs::read_to_string(&state_path).unwrap_or_default().contains("abc"));
     }
 
     // Auditoría #4: un patrón vacío o que falla queda en la lista de fallidos, no en la nota.
@@ -1351,13 +1376,13 @@ mod tests {
     }
 
     // Auditoría #6: el estado se guarda en disco después de cada video, no al final del run.
-    #[test]
-    fn estado_se_guarda_tras_cada_video() {
+    #[tokio::test]
+    async fn estado_se_guarda_tras_cada_video() {
         let dir = tmp_dir("estado-por-video");
         let state_path = dir.join("state.json");
         let mut state = types::ProcessState::new();
         for id in ["v1", "v2"] {
-            record_note(Some(&dir.join("vault")), &processed_video(id, id), None, false, &mut state, &state_path, true).unwrap();
+            finish_video(Some(&dir.join("vault")), &processed_video(id, id), None, false, &mut state, &state_path, async || Ok(false)).await.unwrap();
             let on_disk = std::fs::read_to_string(&state_path).unwrap_or_default();
             assert!(on_disk.contains(id), "{id} tiene que estar en disco ya");
         }
