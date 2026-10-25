@@ -412,22 +412,26 @@ async fn cmd_run(
                     pattern_execution_times,
                 };
 
-                // Create Obsidian note (primary output)
-                let active_vault = playlist_obsidian_vault.as_ref().or(cfg.output.obsidian_vault.as_ref());
-                if let Some(ref vault) = active_vault {
-                    let vault_path = PathBuf::from(vault);
-                    match obsidian::create_note(&vault_path, &processed, playlist_obsidian_folder.as_deref(), dry_run) {
-                        Ok(path) => {
-                            result.note_path = Some(path.to_string_lossy().to_string());
-                            if dry_run {
-                                log::info!("  📝 [Simulado] Note would be created at: {:?}", path);
-                            } else {
-                                log::info!("  📝 Note created: {:?}", path);
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("  ❌ Failed to create note: {e}");
-                        }
+                // Nota en Obsidian (salida principal) + marca en el estado. Si la nota
+                // falla, el video queda como error: sin tarea, sin mover y sin marcar.
+                let active_vault = playlist_obsidian_vault
+                    .as_ref()
+                    .or(cfg.output.obsidian_vault.as_ref())
+                    .map(PathBuf::from);
+                match record_note(
+                    active_vault.as_deref(),
+                    &processed,
+                    playlist_obsidian_folder.as_deref(),
+                    dry_run,
+                    &mut state,
+                    cfg.youtube.processed_playlist_id.is_none(),
+                ) {
+                    Ok(path) => result.note_path = path.map(|p| p.to_string_lossy().to_string()),
+                    Err(e) => {
+                        log::error!("  ❌ Failed to create note: {e:#}");
+                        result.error = Some(format!("{e:#}"));
+                        results.push(result);
+                        continue;
                     }
                 }
 
@@ -517,15 +521,6 @@ async fn cmd_run(
                                 );
                             }
                         }
-                    }
-                }
-
-                // Mark as processed (only if not moving — if moving, it's already gone)
-                if cfg.youtube.processed_playlist_id.is_none() {
-                    if dry_run {
-                        log::info!("  💾 [Simulado] Video would be marked as processed in local state");
-                    } else {
-                        state.mark_processed(video.id.clone());
                     }
                 }
 
@@ -1074,30 +1069,12 @@ async fn cmd_process(
                 return Ok(());
             }
 
-            // Create Obsidian note
-            let mut note_path = None;
-            if let Some(ref vault) = cfg.output.obsidian_vault {
-                let vault_path = PathBuf::from(vault);
-                match obsidian::create_note(&vault_path, &processed, None, dry_run) {
-                    Ok(path) => {
-                        if dry_run {
-                            log::info!("  📝 [Simulado] Note would be created: {:?}", path);
-                        } else {
-                            log::info!("  📝 Note created: {:?}", path);
-                        }
-                        note_path = Some(path.to_string_lossy().to_string());
-                    }
-                    Err(e) => {
-                        log::error!("  ❌ Failed to create note: {e}");
-                    }
-                }
-            }
-
-            // Mark as processed
-            if dry_run {
-                log::info!("  💾 [Simulado] Video would be marked as processed in local state");
-            } else {
-                state.mark_processed(video.id.clone());
+            // Nota + estado. Si la nota falla: error, sin marcar ni imprimir éxito.
+            let vault = cfg.output.obsidian_vault.as_ref().map(PathBuf::from);
+            let note_path = record_note(vault.as_deref(), &processed, None, dry_run, &mut state, true)
+                .context("No se pudo crear la nota; el video no se marcó como procesado")?
+                .map(|p| p.to_string_lossy().to_string());
+            if !dry_run {
                 save_state(&state_path, &state)?;
             }
 
@@ -1136,6 +1113,30 @@ async fn cmd_process(
     }
 
     Ok(())
+}
+
+/// Nota en Obsidian y marca en el estado, compartido por `run` y `process`.
+/// Si la nota falla devuelve error sin marcar (auditoría #2).
+fn record_note(
+    vault: Option<&std::path::Path>,
+    processed: &types::ProcessedVideo,
+    folder: Option<&str>,
+    dry_run: bool,
+    state: &mut types::ProcessState,
+    mark: bool,
+) -> anyhow::Result<Option<PathBuf>> {
+    let note = match vault {
+        Some(vault) => Some(obsidian::create_note(vault, processed, folder, dry_run)?),
+        None => None,
+    };
+    if mark {
+        if dry_run {
+            log::info!("  💾 [Simulado] Video would be marked as processed in local state");
+        } else {
+            state.mark_processed(processed.video.id.clone());
+        }
+    }
+    Ok(note)
 }
 
 async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
@@ -1276,6 +1277,24 @@ fn extract_video_id(input: &str) -> String {
         }
     }
     input.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::test_util::{processed_video, tmp_dir};
+
+    // Auditoría #2: si la nota no se puede escribir, el video no queda procesado.
+    #[test]
+    fn nota_fallida_no_marca_procesado() {
+        let dir = tmp_dir("nota-fallida");
+        let vault = dir.join("vault");
+        std::fs::write(&vault, "un archivo, no un directorio").unwrap();
+        let mut state = types::ProcessState::new();
+        let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, true);
+        assert!(r.is_err(), "la nota falló: no es éxito");
+        assert!(!state.is_processed("abc"));
+    }
 }
 
 fn get_video_metadata_ytdlp(yt_dlp_path: &str, video_id: &str) -> anyhow::Result<crate::types::Video> {

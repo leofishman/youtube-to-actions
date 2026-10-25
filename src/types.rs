@@ -112,6 +112,48 @@ pub struct SpTaskResponse {
     pub title: String,
 }
 
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+
+    /// Directorio temporal nuevo y vacío para un test.
+    pub(crate) fn tmp_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("yt2a-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    pub(crate) fn processed_video(id: &str, title: &str) -> ProcessedVideo {
+        ProcessedVideo {
+            video: Video {
+                id: id.into(),
+                playlist_item_id: String::new(),
+                title: title.into(),
+                channel: "c".into(),
+                description: String::new(),
+                published_at: String::new(),
+                duration_seconds: None,
+                view_count: None,
+                like_count: None,
+                dislike_count: None,
+                comment_count: None,
+            },
+            transcript: None,
+            summary: "s".into(),
+            key_points: vec![],
+            classification: Classification {
+                category: VideoCategory::Tool,
+                tags: vec![],
+                suggested_action: SuggestedAction::Archive,
+            },
+            target_folder: "Learn".into(),
+            local_video_path: None,
+            fabric_output: None,
+        }
+    }
+}
+
 /// Result of processing a single video (for the final report)
 #[derive(Debug, Clone)]
 pub struct ProcessResult {
