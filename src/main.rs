@@ -190,7 +190,7 @@ async fn cmd_run(
 
     // Load state
     let state_path = get_state_path()?;
-    let mut state = load_state(&state_path);
+    let mut state = load_state(&state_path)?;
 
     // Collect playlists to process with their SP settings and overrides
     let playlists_to_process: Vec<_> = {
@@ -836,14 +836,20 @@ fn get_state_path() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn load_state(path: &PathBuf) -> types::ProcessState {
+fn load_state(path: &std::path::Path) -> anyhow::Result<types::ProcessState> {
     if !path.exists() {
-        return types::ProcessState::new();
+        return Ok(types::ProcessState::new());
     }
-    match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => types::ProcessState::new(),
-    }
+    // Corrupto o ilegible: error, nunca un estado vacío que después se guarde encima
+    // y haga reprocesar todo (auditoría #8).
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("No se pudo leer el estado {path:?}"))?;
+    serde_json::from_str(&content).with_context(|| {
+        format!(
+            "El estado {path:?} está corrupto; no se toca. Revisalo a mano, o borralo con \
+             `yt2action state reset` (se reprocesan todos los videos)"
+        )
+    })
 }
 
 fn save_state(path: &std::path::Path, state: &types::ProcessState) -> anyhow::Result<()> {
@@ -916,7 +922,8 @@ async fn cmd_process(
 
     // Load state
     let state_path = get_state_path()?;
-    let mut state = load_state(&state_path);
+    // --stdout no toca el estado: no lo lee (un state.json corrupto no lo bloquea)
+    let mut state = if to_stdout { types::ProcessState::new() } else { load_state(&state_path)? };
 
     // Build valid folder list for the AI
     let mut valid_folders = vec![
@@ -1223,10 +1230,12 @@ fn unique_tmp_dir(prefix: &str) -> std::io::Result<PathBuf> {
 
 async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
     let state_path = get_state_path()?;
-    let mut state = load_state(&state_path);
+    // reset no lee el estado: es la salida explícita para un state.json corrupto
+    let load = || load_state(&state_path);
 
     match subcommand {
         StateSubcommands::Show => {
+            let state = load()?;
             if state.processed_ids.is_empty() {
                 println!("No hay videos registrados en el historial de procesados.");
             } else {
@@ -1248,11 +1257,11 @@ async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            state.processed_ids.clear();
-            save_state(&state_path, &state)?;
+            save_state(&state_path, &types::ProcessState::new())?;
             println!("✅ Historial de videos procesados borrado con éxito.");
         }
         StateSubcommands::Unmark { video } => {
+            let mut state = load()?;
             let id = extract_video_id(&video);
             if state.is_processed(&id) {
                 state.processed_ids.retain(|x| x != &id);
@@ -1314,6 +1323,16 @@ mod tests {
         let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), true);
         assert!(r.is_err(), "la nota falló: no es éxito");
         assert!(!state.is_processed("abc"));
+    }
+
+    // Auditoría #8: un state.json corrupto es un error claro y no se pisa.
+    #[test]
+    fn estado_corrupto_es_error_y_no_se_pisa() {
+        let path = tmp_dir("estado-corrupto").join("state.json");
+        std::fs::write(&path, "{\"processed_ids\": [\"a\", ").unwrap();
+        let e = load_state(&path).expect_err("corrupto no es un estado vacío");
+        assert!(format!("{e:#}").contains("state.json"), "{e:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"processed_ids\": [\"a\", ");
     }
 
     // Auditoría #4: un patrón vacío o que falla queda en la lista de fallidos, no en la nota.
