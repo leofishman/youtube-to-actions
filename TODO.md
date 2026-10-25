@@ -163,6 +163,22 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 *   **Forma:** un ejemplo más en `lapacho/plugins/examples/` (`youtube-summary.json` + un `.py` corto, al estilo de `fact-check`). **No** se reutiliza `yt2action` entero: baja la transcripción con `ytt` o `yt-dlp` y la pasa a Fabric con `summarize`.
 *   **Sin verificar:** si un modelo chico (Gemma E2B) maneja una transcripción larga (la de 17 min pesó ~22 KB); cómo se comporta en Android. Lapacho tiene `main` protegida: va en rama y por PR; el merge es de Leo.
 
+### 24. Hallazgos de la auditoría del 2026-10-25 🔍 (rama fix-llm-vacio-y-stdout)
+Cada uno arreglado tiene un test que falló antes del arreglo (`cargo test`, LLM y `ytt` falsos). No se corrió contra el LLM real ni YouTube.
+*   ✅ **#1** JSON válido sin `summary` (`{}`, `[]`, `{"error":...}`, claves en español) → reintento y, si persiste, error.
+*   ✅ **#2** Si la nota falla, el video no se marca, no se mueve ni se crea tarea; `process` sale con error.
+*   ✅ **#5** Si `ytt` falla es error; el ID va tras `--`; la caché no acepta parciales (`.part.txt` + rename). Probado con un `ytt` falso; **sin verificar** con el `ytt` real.
+*   ✅ **#12** `sync-patterns` usa `data/patterns/` (fallback `patterns/`), sparse checkout (~4,5 MB contra ~47 MB) y temporal propio. Probado contra GitHub con `cargo test -- --ignored`.
+*   ✅ **#6** `state.json` se guarda después de cada video. Un fallo de descarga ya no corta el run: arreglado, pero **sin test** del loop (`cmd_run` necesita OAuth de YouTube).
+*   ✅ **#3** Nota `<slug>-<id>.md`; no pisa un archivo que no es de ese video. Un video procesado antes, si se reprocesa, genera nota con el nombre nuevo.
+*   ✅ **#7** `strip_html` no se come el texto ante `<letra` sin `>`.
+*   ✅ **#4** Patrón vacío o fallido: error en el log, línea en el reporte de `run` y de `process`; `--stdout` sale con error. La rama de `--stdout` no tiene test propio (`cmd_process` necesita yt-dlp/YouTube); sí `run_patterns`.
+*   ✅ **#8** `state.json` corrupto → error claro, no se pisa. `state reset` sigue funcionando como salida explícita.
+*   ✅ **#9** Con `processed_playlist_id`, el estado se marca y guarda antes de mover; un add/remove fallido no reprocesa.
+*   ✅ **#11** `finish_reason: "length"` → error que sugiere subir `MAX_TOKENS` (constante en `processor.rs`), sin reintentar.
+*   ⏳ **#10** Timeouts (pendiente).
+*   ⏳ **#13**, **#14**, **#15** (pendientes; ver la auditoría).
+
 ---
 
 ## 🔮 Ideas a Futuro Lejano
