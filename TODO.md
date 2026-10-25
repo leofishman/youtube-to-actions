@@ -146,6 +146,25 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 
 ---
 
+## 🐞 Bug y novedades (2026-10-25)
+
+### 21. Bug: una respuesta del LLM sin JSON se reporta como éxito 🐛 (✅ Hecho en rama fix-llm-vacio-y-stdout; test con LLM falso vacío)
+*   **Qué pasó:** al procesar el video `TUR9jLhKZmk` (panel de un evento de Kleros), el LLM devolvió una respuesta vacía. `parse_response` (`src/processor.rs`) registró `ERROR ... No JSON found` y `Returning default values`, pero el comando imprimió `✅ PROCESAMIENTO EXITOSO` y escribió una nota de 40 KB con la transcripción, **sin resumen ni tags**. Parece válida y no lo es.
+*   **Esperado:** reintentar la llamada (1–2 veces) y, si sigue sin JSON, terminar con error y **no** crear la nota ni marcar el video como procesado (así `run` lo reintenta).
+*   **Pistas, sin verificar:** el error es `EOF while parsing a value at line 1 column 0`, o sea cuerpo vacío. Puede ser tope de tokens o el razonamiento del modelo consumiéndolos (hay un `max_tokens: 4096` sin commitear en `processor.rs`), o corte de conexión en una generación larga (hay un `tcp_keepalive` también sin commitear). Reproducir antes de tocar.
+*   **Hecho cuando:** con una respuesta vacía simulada, el comando sale con error, no escribe nota y no guarda el estado como procesado. Un test que lo cubra.
+
+### 22. Salida sin efectos para uso desde otros programas 🔌 (✅ Hecho: `process <id> --stdout`, probado con jNQXAC9IVRw; sin cambios en estado/vault)
+*   **Descripción:** hoy `process <id>` escribe una nota en Obsidian. Para usarlo como pieza de un plugin hace falta un modo que reciba una URL o un ID, imprima el resumen por stdout y no escriba nada (ni nota, ni estado, ni tarea en Super Productivity). Idea: `--stdout` (o `--no-write`).
+*   **Hecho cuando:** `yt2action process <url> --stdout` imprime el resumen y no deja archivos nuevos.
+
+### 23. Plugin de ejemplo para Lapacho: resumir un video de YouTube 🌳 (Hecho en rama `plugin-ejemplo-youtube-summary` de lapacho, sin push. Probado con ytt real + fabric falso; falta probar con fabric real, modelo chico/transcripción larga, fallback yt-dlp y Android)
+*   **Idea:** copiás un link de YouTube, mandás el clip al plugin y vuelve un resumen. Cada usuario baja la transcripción desde su máquina; no hay servicio pago que raspe YouTube.
+*   **Forma:** un ejemplo más en `lapacho/plugins/examples/` (`youtube-summary.json` + un `.py` corto, al estilo de `fact-check`). **No** se reutiliza `yt2action` entero: baja la transcripción con `ytt` o `yt-dlp` y la pasa a Fabric con `summarize`.
+*   **Sin verificar:** si un modelo chico (Gemma E2B) maneja una transcripción larga (la de 17 min pesó ~22 KB); cómo se comporta en Android. Lapacho tiene `main` protegida: va en rama y por PR; el merge es de Leo.
+
+---
+
 ## 🔮 Ideas a Futuro Lejano
 
 ### 19. Web UI Ligera o TUI

@@ -1,0 +1,4 @@
+- [x] 2026-10-25 Bug: respuesta vacía del LLM se reporta como éxito y escribe nota sin resumen (TODO #21). Reproducir con TUR9jLhKZmk
+- [x] 2026-10-25 Modo --stdout sin efectos para usar yt2action desde otros programas (TODO #22)
+- [ ] 2026-10-25 Plugin de ejemplo de Lapacho: resumir video de YouTube, coordinar con la sesión de Lapacho (TODO #23)
+- [ ] 2026-10-25 Decidir qué hacer con el WIP sin commitear de processor.rs/main.rs (keepalive, max_tokens 4096, alias --pattern)
