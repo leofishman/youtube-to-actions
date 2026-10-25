@@ -27,7 +27,12 @@ impl Processor {
         let pretty = valid_folders.clone();
         let lower: Vec<String> = valid_folders.iter().map(|f| f.to_lowercase()).collect();
         Self {
-            client: reqwest::Client::new(),
+            // ponytail: keepalive evita que routers/NAT corten la conexión idle
+            // mientras el LLM genera durante 10-60 min sin enviar bytes (stream: false)
+            client: reqwest::Client::builder()
+                .tcp_keepalive(std::time::Duration::from_secs(30))
+                .build()
+                .expect("reqwest client"),
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
             api_key: api_key.to_string(),
@@ -270,6 +275,8 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             "messages": messages,
             "stream": false,
             "temperature": 0.1,
+            // ponytail: techo de sanidad; subir si algún patrón queda truncado
+            "max_tokens": 4096,
         });
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();

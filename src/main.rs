@@ -38,7 +38,7 @@ enum Commands {
         force: bool,
 
         /// Apply Fabric patterns for rich content analysis (comma-separated or multiple flags, e.g. "summarize,extract_wisdom")
-        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        #[arg(short, long, visible_alias = "pattern", value_delimiter = ',', num_args = 1..)]
         patterns: Vec<String>,
 
         /// Actually download the video file locally (default: false, only fetches transcript)
@@ -79,7 +79,7 @@ enum Commands {
         config: Option<PathBuf>,
 
         /// Use Fabric patterns for analysis (comma-separated or multiple flags, e.g. "summarize,extract_wisdom")
-        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        #[arg(short, long, visible_alias = "pattern", value_delimiter = ',', num_args = 1..)]
         patterns: Vec<String>,
 
         /// Actually download the video file locally (default: false, only fetches transcript)
