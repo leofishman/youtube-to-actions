@@ -23,6 +23,8 @@ pub fn escape_yaml(s: &str) -> String {
 pub fn strip_html(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let chars: Vec<char> = s.chars().collect();
+    // Último '>': pasado ese punto ningún '<' cierra, así no se re-escanea hasta el final
+    let last_gt = chars.iter().rposition(|&c| c == '>');
     let mut i = 0;
     
     while i < chars.len() {
@@ -35,14 +37,13 @@ pub fn strip_html(s: &str) -> String {
                     is_tag = true;
                 }
             }
-            if is_tag {
-                // Skip characters until we find the closing '>'
-                i += 1;
-                while i < chars.len() && chars[i] != '>' {
-                    i += 1;
+            if is_tag && last_gt.is_some_and(|g| g > i) {
+                // Skip up to the closing '>'. Sin '>' no es una etiqueta (no puede
+                // formarse ninguna): se deja el texto tal cual (auditoría #7).
+                if let Some(end) = chars[i + 1..].iter().position(|&c| c == '>') {
+                    i += end + 2;
+                    continue;
                 }
-                i += 1; // Skip the '>' character itself
-                continue;
             }
         }
         result.push(chars[i]);
@@ -139,6 +140,14 @@ mod tests {
         assert_eq!(strip_html("if count < 5 || x > 10"), "if count < 5 || x > 10");
         // Ensure invalid tags or unclosed tags are handled safely
         assert_eq!(strip_html("Hello < unclosed tag"), "Hello < unclosed tag");
+    }
+
+    // Auditoría #7: un `<letra` sin `>` no es una etiqueta y no se come el resto del texto.
+    #[test]
+    fn strip_html_sin_cierre_conserva_el_texto() {
+        let s = "si a <b entonces sigue mucho texto importante";
+        assert_eq!(strip_html(s), s);
+        assert_eq!(strip_html("<b>ok</b> y a <b sigue"), "ok y a <b sigue");
     }
 
     #[test]
