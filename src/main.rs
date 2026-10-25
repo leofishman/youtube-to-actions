@@ -330,7 +330,7 @@ async fn cmd_run(
         } else {
             log::info!("  📥 Fetching transcript for {}...", video.id);
         }
-        let transcript_result = downloader::download_video(
+        let transcript_result = match downloader::download_video(
             &yt_dlp_path,
             &video.id,
             &videos_dir,
@@ -338,7 +338,16 @@ async fn cmd_run(
             &subtitle_langs,
             download_video_flag,
         )
-        .await?;
+        .await
+        {
+            Ok(t) => t,
+            // Un video que falla no corta los demás (auditoría #6)
+            Err(e) => {
+                log::error!("  ❌ Failed to fetch transcript for '{}': {e:#}", video.title);
+                results.push(error_result(video, &e));
+                continue;
+            }
+        };
 
         // Step 2: AI processing
         match proc.process(video, transcript_result.transcript.as_deref()).await {
@@ -424,6 +433,7 @@ async fn cmd_run(
                     playlist_obsidian_folder.as_deref(),
                     dry_run,
                     &mut state,
+                    &state_path,
                     cfg.youtube.processed_playlist_id.is_none(),
                 ) {
                     Ok(path) => result.note_path = path.map(|p| p.to_string_lossy().to_string()),
@@ -528,18 +538,7 @@ async fn cmd_run(
             }
             Err(e) => {
                 log::error!("  ❌ Failed to process '{}': {e}", video.title);
-                results.push(ProcessResult {
-                    video_title: video.title.clone(),
-                    video_url: format!("https://youtube.com/watch?v={}", video.id),
-                    target_folder: String::new(),
-                    note_path: None,
-                    sp_task_id: None,
-                    moved_to_processed: false,
-                    suggested_action: types::SuggestedAction::SaveForLater,
-                    tags: vec![],
-                    error: Some(e.to_string()),
-                    pattern_execution_times: vec![],
-                });
+                results.push(error_result(video, &e));
             }
         }
     }
@@ -547,10 +546,8 @@ async fn cmd_run(
         total_processed += to_process.len();
     }
 
-    // Save state (only for videos not moved to another playlist)
-    if !dry_run {
-        save_state(&state_path, &state)?;
-    } else {
+    // El estado ya se guardó después de cada video (record_note)
+    if dry_run {
         log::info!("💾 [Simulado] State changes would be saved to {:?}", state_path);
     }
 
@@ -558,6 +555,21 @@ async fn cmd_run(
     print_report(&results, &cfg, start_time.elapsed(), dry_run);
 
     Ok(())
+}
+
+fn error_result(video: &types::Video, e: &anyhow::Error) -> ProcessResult {
+    ProcessResult {
+        video_title: video.title.clone(),
+        video_url: format!("https://youtube.com/watch?v={}", video.id),
+        target_folder: String::new(),
+        note_path: None,
+        sp_task_id: None,
+        moved_to_processed: false,
+        suggested_action: types::SuggestedAction::SaveForLater,
+        tags: vec![],
+        error: Some(format!("{e:#}")),
+        pattern_execution_times: vec![],
+    }
 }
 
 /// Print a beautiful summary report after processing
@@ -864,7 +876,7 @@ fn load_state(path: &PathBuf) -> types::ProcessState {
     }
 }
 
-fn save_state(path: &PathBuf, state: &types::ProcessState) -> anyhow::Result<()> {
+fn save_state(path: &std::path::Path, state: &types::ProcessState) -> anyhow::Result<()> {
     let content = serde_json::to_string_pretty(state)?;
     // Atomic write: write to temp file first, then rename.
     // rename() is atomic on Linux (ext4/btrfs), so if the process crashes
@@ -1071,12 +1083,9 @@ async fn cmd_process(
 
             // Nota + estado. Si la nota falla: error, sin marcar ni imprimir éxito.
             let vault = cfg.output.obsidian_vault.as_ref().map(PathBuf::from);
-            let note_path = record_note(vault.as_deref(), &processed, None, dry_run, &mut state, true)
+            let note_path = record_note(vault.as_deref(), &processed, None, dry_run, &mut state, &state_path, true)
                 .context("No se pudo crear la nota; el video no se marcó como procesado")?
                 .map(|p| p.to_string_lossy().to_string());
-            if !dry_run {
-                save_state(&state_path, &state)?;
-            }
 
             // Print report
             println!("══════════════════════════════════════════════════════");
@@ -1123,6 +1132,7 @@ fn record_note(
     folder: Option<&str>,
     dry_run: bool,
     state: &mut types::ProcessState,
+    state_path: &std::path::Path,
     mark: bool,
 ) -> anyhow::Result<Option<PathBuf>> {
     let note = match vault {
@@ -1133,7 +1143,9 @@ fn record_note(
         if dry_run {
             log::info!("  💾 [Simulado] Video would be marked as processed in local state");
         } else {
+            // Se guarda por video: un corte a mitad del run no pierde lo hecho (auditoría #6)
             state.mark_processed(processed.video.id.clone());
+            save_state(state_path, state)?;
         }
     }
     Ok(note)
@@ -1304,9 +1316,22 @@ mod tests {
         let vault = dir.join("vault");
         std::fs::write(&vault, "un archivo, no un directorio").unwrap();
         let mut state = types::ProcessState::new();
-        let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, true);
+        let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), true);
         assert!(r.is_err(), "la nota falló: no es éxito");
         assert!(!state.is_processed("abc"));
+    }
+
+    // Auditoría #6: el estado se guarda en disco después de cada video, no al final del run.
+    #[test]
+    fn estado_se_guarda_tras_cada_video() {
+        let dir = tmp_dir("estado-por-video");
+        let state_path = dir.join("state.json");
+        let mut state = types::ProcessState::new();
+        for id in ["v1", "v2"] {
+            record_note(Some(&dir.join("vault")), &processed_video(id, id), None, false, &mut state, &state_path, true).unwrap();
+            let on_disk = std::fs::read_to_string(&state_path).unwrap_or_default();
+            assert!(on_disk.contains(id), "{id} tiene que estar en disco ya");
+        }
     }
 
     // Auditoría #12: Fabric movió los patrones a data/patterns/; patterns/ queda de fallback.
