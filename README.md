@@ -14,7 +14,7 @@ Built with [Hermes 🦋](https://github.com/NousResearch/hermes-agent) as person
 - 📂 **Multiple Playlists** — monitor multiple playlists simultaneously, each with its own processing rules, target folder, or SP project.
 - 🧠 **AI classification** — analyzes title + description + transcript + [fabric patterns](https://github.com/danielmiessler/Fabric/) to categorize each video
 - 📁 **Smart folder routing** — AI picks the Obsidian folder, with case-insensitive fallback
-- 🔗 **Clean Filenames** — automatically generates slugs for filenames (e.g., `mi-video-interesante.md`) while keeping the full YouTube title in the metadata and header.
+- 🔗 **Clean Filenames** — automatically generates slugs for filenames with the video ID appended (e.g., `mi-video-interesante-dQw4w9WgXcQ.md`), so two videos never overwrite each other, while keeping the full YouTube title in the metadata and header.
 - 🎨 **Fabric patterns** — optional deep analysis via community Fabric patterns (`--pattern extract_wisdom`). Playlists can run multiple patterns sequentially (e.g. `patterns = ["summarize", "extract_wisdom"]`), concatenating results cleanly in Obsidian.
 - 📊 **Rich Metadata & Stats** — automatically fetches and embeds video stats (views, likes, comments, published date) in the Obsidian note frontmatter and body.
 - 📋 **Final report** — detailed summary of what was processed and where it was saved
