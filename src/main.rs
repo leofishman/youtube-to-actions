@@ -1158,47 +1158,60 @@ async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
 
     println!("📥 Sincronizando patrones de Fabric desde el repositorio oficial...");
     
-    // Create a temporary directory in the workspace
-    let tmp_dir = std::path::PathBuf::from("/tmp/yt2action_fabric_sync");
-    if tmp_dir.exists() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-    }
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    println!("   Clonando https://github.com/danielmiessler/fabric.git (shallow clone)...");
-    
-    // Run git clone --depth 1
-    let status = std::process::Command::new("git")
-        .args(&["clone", "--depth", "1", "https://github.com/danielmiessler/fabric.git", "."])
-        .current_dir(&tmp_dir)
-        .status()?;
-
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        anyhow::bail!("Error: Falló la clonación del repositorio de Fabric.");
-    }
-
-    let source_patterns = tmp_dir.join("patterns");
-    if !source_patterns.exists() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        anyhow::bail!("Error: No se encontró la carpeta 'patterns' en el repositorio clonado.");
-    }
-
-    println!("   Copiando patrones a {:?}", target_dir);
-    
-    // Create target dir if it doesn't exist
-    std::fs::create_dir_all(&target_dir)?;
-
-    // Copy patterns recursively
-    copy_dir_all(&source_patterns, &target_dir)?;
-
-    // Clean up
+    let tmp_dir = unique_tmp_dir("yt2action-fabric")?;
+    let res = fetch_fabric_patterns(&tmp_dir, &target_dir);
     let _ = std::fs::remove_dir_all(&tmp_dir);
+    res?;
 
     println!("✅ ¡Sincronización completada con éxito!");
     println!("   Los patrones de Fabric están listos en {:?}", target_dir);
 
     Ok(())
+}
+
+/// Clona solo las carpetas de patrones de Fabric en `tmp_dir` (sparse checkout: ~4 MB
+/// contra ~47 MB del clon superficial completo) y las copia a `target_dir`.
+fn fetch_fabric_patterns(tmp_dir: &std::path::Path, target_dir: &std::path::Path) -> anyhow::Result<()> {
+    println!("   Clonando las carpetas de patrones de https://github.com/danielmiessler/fabric.git ...");
+    let git = |args: &[&str]| -> anyhow::Result<()> {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp_dir)
+            .status()
+            .context("No se pudo ejecutar git")?;
+        anyhow::ensure!(status.success(), "Error: falló `git {}`", args.join(" "));
+        Ok(())
+    };
+    git(&["clone", "-q", "--depth", "1", "--filter=blob:none", "--sparse",
+          "https://github.com/danielmiessler/fabric.git", "."])?;
+    git(&["sparse-checkout", "set", "data/patterns", "patterns"])?;
+
+    let source_patterns = find_patterns_dir(tmp_dir).context(
+        "Error: no se encontró 'data/patterns' ni 'patterns' en el repositorio de Fabric.",
+    )?;
+    println!("   Copiando patrones de {:?} a {:?}", source_patterns, target_dir);
+    copy_dir_all(&source_patterns, target_dir)?;
+    Ok(())
+}
+
+/// Carpeta de patrones en un clon de Fabric: `data/patterns/` (actual) o `patterns/` (versiones viejas).
+fn find_patterns_dir(repo: &std::path::Path) -> Option<PathBuf> {
+    ["data/patterns", "patterns"]
+        .into_iter()
+        .map(|p| repo.join(p))
+        .find(|p| p.is_dir())
+}
+
+/// Directorio temporal nuevo y propio. `create_dir` falla si ya existe: nunca reusa ni
+/// borra uno ajeno (antes era un `/tmp/yt2action_fabric_sync` fijo).
+fn unique_tmp_dir(prefix: &str) -> std::io::Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let d = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&d)?;
+    Ok(d)
 }
 
 async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
@@ -1294,6 +1307,41 @@ mod tests {
         let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, true);
         assert!(r.is_err(), "la nota falló: no es éxito");
         assert!(!state.is_processed("abc"));
+    }
+
+    // Auditoría #12: Fabric movió los patrones a data/patterns/; patterns/ queda de fallback.
+    #[test]
+    fn patrones_en_data_patterns_con_fallback() {
+        let repo = tmp_dir("fabric-repo");
+        assert_eq!(find_patterns_dir(&repo), None);
+        std::fs::create_dir_all(repo.join("patterns")).unwrap();
+        assert_eq!(find_patterns_dir(&repo), Some(repo.join("patterns")));
+        std::fs::create_dir_all(repo.join("data/patterns")).unwrap();
+        assert_eq!(find_patterns_dir(&repo), Some(repo.join("data/patterns")));
+    }
+
+    // Baja de GitHub: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn sync_patterns_contra_github() {
+        let tmp = unique_tmp_dir("yt2a-test-clone").unwrap();
+        let target = tmp_dir("fabric-target");
+        let r = fetch_fabric_patterns(&tmp, &target);
+        let _ = std::fs::remove_dir_all(&tmp);
+        r.unwrap();
+        assert!(target.join("summarize/system.md").is_file());
+        assert!(target.join("extract_wisdom/system.md").is_file());
+    }
+
+    // Auditoría #12: el clon va a un directorio temporal propio, no a uno fijo en /tmp.
+    #[test]
+    fn directorio_temporal_unico() {
+        let a = unique_tmp_dir("yt2a-test-sync").unwrap();
+        let b = unique_tmp_dir("yt2a-test-sync").unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && b.is_dir());
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 }
 
