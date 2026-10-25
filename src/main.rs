@@ -93,6 +93,10 @@ enum Commands {
         /// Imprime el resumen por stdout (logs a stderr) y no escribe nota, estado, tarea ni archivos
         #[arg(long, visible_alias = "no-write")]
         stdout: bool,
+
+        /// Reprocess even if the video is already in the processed history
+        #[arg(long)]
+        force: bool,
     },
     /// Synchronize Fabric patterns from the official repository to ~/.config/fabric/patterns/
     SyncPatterns {
@@ -143,8 +147,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
-        Commands::Process { video, config, patterns, download_video, dry_run, stdout } => {
-            cmd_process(video, config, patterns, download_video, dry_run, stdout).await
+        Commands::Process { video, config, patterns, download_video, dry_run, stdout, force } => {
+            cmd_process(video, config, patterns, download_video, dry_run, stdout, force).await
         }
         Commands::SyncPatterns { force } => cmd_sync_patterns(force).await,
         Commands::State { subcommand } => cmd_state(subcommand).await,
@@ -861,6 +865,7 @@ async fn cmd_process(
     download_video_flag: bool,
     dry_run: bool,
     to_stdout: bool,
+    force: bool,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
@@ -912,6 +917,12 @@ async fn cmd_process(
     let state_path = get_state_path()?;
     // --stdout no toca el estado: no lo lee (un state.json corrupto no lo bloquea)
     let mut state = if to_stdout { types::ProcessState::new() } else { load_state(&state_path)? };
+
+    // Igual que `run`: lo ya procesado se saltea salvo con --force (la simulación y --stdout no tocan el estado)
+    if !force && !to_stdout && !dry_run && state.is_processed(&video.id) {
+        println!("  ⏭️  Ya procesado: {}. Usá --force para reprocesarlo.", video.id);
+        return Ok(());
+    }
 
     // Build valid folder list for the AI
     let mut valid_folders = vec![

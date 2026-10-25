@@ -24,7 +24,8 @@ pub fn create_note(
         raw_folder
     };
     let dir = vault_path.join(folder);
-    let path = dir.join(&filename);
+    // Un reproceso reescribe la nota existente del video, aunque tenga el nombre de antes del ID
+    let path = find_note_of_video(&dir, &processed.video.id).unwrap_or_else(|| dir.join(&filename));
 
     if dry_run {
         log::info!("  📝 [Simulado] Note would be created at: {:?}", path);
@@ -175,6 +176,15 @@ comments: {comments}
     Ok(path)
 }
 
+/// La nota de este video en `dir`, si ya existe (la identifica su línea `url:`).
+fn find_note_of_video(dir: &Path, id: &str) -> Option<std::path::PathBuf> {
+    let own = format!("url: https://youtube.com/watch?v={id}\n");
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.extension().is_some_and(|x| x == "md")
+            && std::fs::read_to_string(p).is_ok_and(|c| c.contains(&own))
+    })
+}
+
 /// `<slug>-<id>.md`: el ID evita que dos títulos con el mismo slug se pisen y que un
 /// título sin caracteres válidos dé `.md` (auditoría #3).
 fn note_filename(title: &str, id: &str) -> String {
@@ -247,5 +257,19 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         create_note(&vault, &v, None, false).unwrap();
         create_note(&vault, &v, None, false).unwrap();
+    }
+
+    // Un reproceso reescribe la nota con el nombre de antes del ID, no crea otra.
+    #[test]
+    fn reproceso_reusa_la_nota_de_nombre_viejo() {
+        let vault = tmp_dir("nota-vieja");
+        let v = processed_video("idE", "Hola Mundo");
+        let nueva = create_note(&vault, &v, None, true).unwrap();
+        let vieja = nueva.parent().unwrap().join("hola-mundo.md");
+        std::fs::create_dir_all(vieja.parent().unwrap()).unwrap();
+        std::fs::write(&vieja, "url: https://youtube.com/watch?v=idE\nvieja").unwrap();
+        let p = create_note(&vault, &v, None, false).unwrap();
+        assert_eq!(p, vieja);
+        assert!(!nueva.exists());
     }
 }
