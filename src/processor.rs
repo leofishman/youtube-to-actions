@@ -146,7 +146,12 @@ impl Processor {
             serde_json::json!({"role": "user", "content": user_content}),
         ];
 
-        self.call_llm(&messages).await
+        let output = self.call_llm(&messages).await?;
+        anyhow::ensure!(
+            !output.trim().is_empty(),
+            "el patrón {pattern_name} devolvió una respuesta vacía"
+        );
+        Ok(output)
     }
 
     /// Build chat messages (system + user) for the OpenAI-compatible API
@@ -574,6 +579,23 @@ pub(crate) mod tests {
         let (url, _) = llm_server(vec![("{}", "stop"), (GOOD_JSON, "stop")]);
         let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
         assert_eq!(pr.process(&video(), Some("tr")).await.unwrap().summary, "Resumen real");
+    }
+
+    /// Directorio de patrones falso con `summarize/system.md`.
+    pub(crate) fn patterns_dir(name: &str) -> String {
+        let dir = crate::types::test_util::tmp_dir(name);
+        std::fs::create_dir_all(dir.join("summarize")).unwrap();
+        std::fs::write(dir.join("summarize/system.md"), "sys").unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    // Auditoría #4: un patrón que vuelve vacío no es un éxito.
+    #[tokio::test]
+    async fn patron_vacio_es_error() {
+        let (url, _) = llm_server(vec![("  \n", "stop")]);
+        let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        let r = pr.process_with_pattern(&video(), Some("tr"), "summarize", &patterns_dir("pat-vacio")).await;
+        assert!(r.is_err(), "salida vacía del patrón: {r:?}");
     }
 
     pub(crate) fn video() -> Video {

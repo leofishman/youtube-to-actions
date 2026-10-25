@@ -168,4 +168,6 @@ pub struct ProcessResult {
     pub tags: Vec<String>,
     pub error: Option<String>,
     pub pattern_execution_times: Vec<(String, String)>,
+    /// Patrones de Fabric que fallaron o volvieron vacíos ("nombre: error")
+    pub pattern_errors: Vec<String>,
 }

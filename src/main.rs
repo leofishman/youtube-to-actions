@@ -365,49 +365,14 @@ async fn cmd_run(
                     playlist_patterns.clone()
                 };
 
-                let mut pattern_execution_times = Vec::new();
-
-                for pattern_name in &patterns_to_run {
-                    let patterns_dir = format!(
-                        "{}/.config/fabric/patterns",
-                        std::env::var("HOME").unwrap_or_default()
-                    );
-                    log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
-
-                    let pattern_start = std::time::Instant::now();
-                    let pattern_res = proc
-                        .process_with_pattern(
-                            video,
-                            transcript_result.transcript.as_deref(),
-                            pattern_name,
-                            &patterns_dir,
-                        )
-                        .await;
-
-                    let duration_str = format!("{:.1}s", pattern_start.elapsed().as_secs_f64());
-                    pattern_execution_times.push((pattern_name.clone(), duration_str));
-
-                    match pattern_res {
-                        Ok(fabric_output) => {
-                            if processed.fabric_output.is_none() {
-                                processed.fabric_output = Some(fabric_output.clone());
-                            } else {
-                                let mut current = processed.fabric_output.take().unwrap();
-                                current.push_str(&format!("\n\n---\n\n# Patrón: {}\n\n{}", pattern_name, fabric_output));
-                                processed.fabric_output = Some(current);
-                            }
-                            log::info!("  📜 Fabric pattern output stored");
-                            
-                            // Log temporal de salidas de Fabric
-                            if let Err(e) = log_fabric_output_temp(video, pattern_name, &fabric_output) {
-                                log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("  ⚠️ Fabric pattern failed: {e}");
-                        }
-                    }
-                }
+                let (pattern_execution_times, pattern_errors) = run_patterns(
+                    &proc,
+                    &mut processed,
+                    &patterns_to_run,
+                    &fabric_patterns_dir(),
+                    true,
+                )
+                .await;
                 let mut result = ProcessResult {
                     video_title: video.title.clone(),
                     video_url: format!("https://youtube.com/watch?v={}", video.id),
@@ -419,6 +384,7 @@ async fn cmd_run(
                     tags: processed.classification.tags.clone(),
                     error: None,
                     pattern_execution_times,
+                    pattern_errors,
                 };
 
                 // Nota en Obsidian (salida principal) + marca en el estado. Si la nota
@@ -569,6 +535,7 @@ fn error_result(video: &types::Video, e: &anyhow::Error) -> ProcessResult {
         tags: vec![],
         error: Some(format!("{e:#}")),
         pattern_execution_times: vec![],
+        pattern_errors: vec![],
     }
 }
 
@@ -625,6 +592,9 @@ fn print_report(results: &[ProcessResult], cfg: &Config, total_duration: std::ti
             for (p_name, duration) in &r.pattern_execution_times {
                 println!("         - {}: {}", p_name, duration);
             }
+        }
+        for err in &r.pattern_errors {
+            println!("     ⚠️  Patrón fallido: {err}");
         }
         if let Some(ref err) = r.error {
             println!("     ❌  Error: {err}");
@@ -1028,46 +998,17 @@ async fn cmd_process(
                     .map(|p| p.to_string_lossy().to_string());
 
             // If Fabric patterns are specified, run the second phase
-            for pattern_name in &patterns {
-                let patterns_dir = format!(
-                    "{}/.config/fabric/patterns",
-                    std::env::var("HOME").unwrap_or_default()
-                );
-                log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
-
-                match proc
-                    .process_with_pattern(
-                        &video,
-                        transcript_result.transcript.as_deref(),
-                        pattern_name,
-                        &patterns_dir,
-                    )
-                    .await
-                {
-                    Ok(fabric_output) => {
-                        if processed.fabric_output.is_none() {
-                            processed.fabric_output = Some(fabric_output.clone());
-                        } else {
-                            let mut current = processed.fabric_output.take().unwrap();
-                            current.push_str(&format!("\n\n---\n\n# Patrón: {}\n\n{}", pattern_name, fabric_output));
-                            processed.fabric_output = Some(current);
-                        }
-                        log::info!("  📜 Fabric pattern output stored");
-                        
-                        // Log temporal de salidas de Fabric
-                        if !to_stdout {
-                            if let Err(e) = log_fabric_output_temp(&video, pattern_name, &fabric_output) {
-                                log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("  ⚠️ Fabric pattern failed: {e}");
-                    }
-                }
-            }
+            let (_, pattern_errors) =
+                run_patterns(&proc, &mut processed, &patterns, &fabric_patterns_dir(), !to_stdout).await;
 
             if to_stdout {
+                // Salida para otros programas: un patrón fallido es error, no salida parcial (auditoría #4)
+                anyhow::ensure!(
+                    pattern_errors.is_empty(),
+                    "Fallaron patrones de Fabric: {}",
+                    pattern_errors.join("; ")
+                );
+
                 println!("{}", processed.summary);
                 if !processed.key_points.is_empty() {
                     println!();
@@ -1107,6 +1048,9 @@ async fn cmd_process(
             println!("  🔗  https://youtube.com/watch?v={}", video.id);
             println!("  🏷️  {}", processed.classification.tags.join(", "));
             println!("  💡  {}", processed.classification.suggested_action);
+            for err in &pattern_errors {
+                println!("  ⚠️  Patrón fallido (no está en la nota): {err}");
+            }
             println!();
             println!("  Resumen:");
             for line in processed.summary.lines() {
@@ -1122,6 +1066,57 @@ async fn cmd_process(
     }
 
     Ok(())
+}
+
+fn fabric_patterns_dir() -> String {
+    format!("{}/.config/fabric/patterns", std::env::var("HOME").unwrap_or_default())
+}
+
+/// Corre los patrones de Fabric y agrega su salida a `processed.fabric_output`.
+/// Devuelve los tiempos por patrón y los que fallaron o volvieron vacíos (auditoría #4),
+/// para que el que llama los muestre: no son un éxito silencioso.
+async fn run_patterns(
+    proc: &processor::Processor,
+    processed: &mut types::ProcessedVideo,
+    patterns: &[String],
+    patterns_dir: &str,
+    log_to_file: bool,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut times = Vec::new();
+    let mut errors = Vec::new();
+    for pattern_name in patterns {
+        log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
+        let start = std::time::Instant::now();
+        let res = proc
+            .process_with_pattern(&processed.video, processed.transcript.as_deref(), pattern_name, patterns_dir)
+            .await;
+        times.push((pattern_name.clone(), format!("{:.1}s", start.elapsed().as_secs_f64())));
+
+        match res {
+            Ok(fabric_output) => {
+                match processed.fabric_output.as_mut() {
+                    None => processed.fabric_output = Some(fabric_output.clone()),
+                    Some(current) => current.push_str(&format!(
+                        "\n\n---\n\n# Patrón: {}\n\n{}",
+                        pattern_name, fabric_output
+                    )),
+                }
+                log::info!("  📜 Fabric pattern output stored");
+
+                // Log temporal de salidas de Fabric
+                if log_to_file {
+                    if let Err(e) = log_fabric_output_temp(&processed.video, pattern_name, &fabric_output) {
+                        log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("  ❌ Falló el patrón de Fabric {pattern_name}: {e:#}");
+                errors.push(format!("{pattern_name}: {e:#}"));
+            }
+        }
+    }
+    (times, errors)
 }
 
 /// Nota en Obsidian y marca en el estado, compartido por `run` y `process`.
@@ -1319,6 +1314,21 @@ mod tests {
         let r = record_note(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), true);
         assert!(r.is_err(), "la nota falló: no es éxito");
         assert!(!state.is_processed("abc"));
+    }
+
+    // Auditoría #4: un patrón vacío o que falla queda en la lista de fallidos, no en la nota.
+    #[tokio::test]
+    async fn patron_fallido_se_reporta() {
+        let (url, _) = processor::tests::llm_server(vec![("", "stop")]);
+        let proc = processor::Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        let mut processed = processed_video("abc", "T");
+        let dir = processor::tests::patterns_dir("pat-fallido");
+        let patterns = vec!["summarize".to_string(), "no_existe".to_string()];
+        let (times, errors) = run_patterns(&proc, &mut processed, &patterns, &dir, false).await;
+        assert_eq!(times.len(), 2);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].starts_with("summarize:") && errors[1].starts_with("no_existe:"));
+        assert!(processed.fabric_output.is_none());
     }
 
     // Auditoría #6: el estado se guarda en disco después de cada video, no al final del run.
