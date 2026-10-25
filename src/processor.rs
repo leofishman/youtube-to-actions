@@ -40,14 +40,19 @@ impl Processor {
     /// Process a video through the LLM to get summary, key points, classification, and folder
     pub async fn process(&self, video: &Video, transcript: Option<&str>) -> Result<ProcessedVideo> {
         let messages = self.build_messages(video, transcript);
-        let response = self.call_llm(&messages).await?;
-
-        log::debug!(
-            "AI raw response (first 500 chars): {}",
-            &response[..response.len().min(500)]
-        );
-
-        let parsed = self.parse_response(&response);
+        // Respuesta sin JSON (p.ej. vacía): 1 intento + 2 reintentos; si no, error (no se escribe nada).
+        let max_attempts = 3;
+        let mut parsed = None;
+        for attempt in 1..=max_attempts {
+            let response = self.call_llm(&messages).await?;
+            log::debug!("AI raw response (first 500 chars): {}", response.chars().take(500).collect::<String>());
+            parsed = self.parse_response(&response);
+            if parsed.is_some() {
+                break;
+            }
+            log::warn!("  ⚠️ El LLM no devolvió JSON usable (intento {attempt}/{max_attempts})");
+        }
+        let parsed = parsed.context("El LLM no devolvió JSON usable tras reintentos")?;
 
         log::info!(
             "  🧠 AI → categoría: {:?}, carpeta: {}, acción: {:?}",
@@ -238,7 +243,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
                         "  ⚠️ LLM attempt {}/{} failed: {}. Retrying in {:?}...",
                         attempt + 1,
                         max_retries,
-                        e,
+                        format!("{e:#}"),
                         delay
                     );
                     tokio::time::sleep(delay).await;
@@ -313,7 +318,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
         Ok(content)
     }
 
-    fn parse_response(&self, raw: &str) -> ParsedOutput {
+    fn parse_response(&self, raw: &str) -> Option<ParsedOutput> {
         let v: Value = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(e) => {
@@ -340,8 +345,8 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
         };
 
         if v == Value::Null {
-            log::error!("AI returned no usable JSON. Returning default values.");
-            return ParsedOutput::default();
+            log::error!("AI returned no usable JSON.");
+            return None;
         }
 
         let summary = v["summary"]
@@ -429,7 +434,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             fb.to_string()
         });
 
-        ParsedOutput {
+        Some(ParsedOutput {
             summary,
             key_points,
             target_folder,
@@ -438,7 +443,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
                 tags,
                 suggested_action: action,
             },
-        }
+        })
     }
 }
 
@@ -447,21 +452,6 @@ struct ParsedOutput {
     key_points: Vec<String>,
     target_folder: String,
     classification: Classification,
-}
-
-impl Default for ParsedOutput {
-    fn default() -> Self {
-        Self {
-            summary: "No se pudo generar resumen.".to_string(),
-            key_points: vec![],
-            target_folder: "Resources/YouTube".to_string(),
-            classification: Classification {
-                category: VideoCategory::Other("unknown".to_string()),
-                tags: vec![],
-                suggested_action: SuggestedAction::SaveForLater,
-            },
-        }
-    }
 }
 
 /// Sanitizes a string tag to be valid in Obsidian:
@@ -503,4 +493,55 @@ fn sanitize_tag(tag: &str) -> Option<String> {
     }
 
     Some(final_tag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+
+    /// Servidor HTTP mínimo que siempre responde content vacío (caso TUR9jLhKZmk).
+    fn empty_llm_server() -> (String, Arc<AtomicUsize>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut buf = [0u8; 65536];
+                let mut n = s.read(&mut buf).unwrap_or(0);
+                // leer hasta tener el body completo (headers + content-length)
+                while n < buf.len() {
+                    let t = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Some(i) = t.find("\r\n\r\n") {
+                        let cl = t.to_lowercase().split("content-length:").nth(1)
+                            .and_then(|x| x.trim().split("\r\n").next()?.parse::<usize>().ok()).unwrap_or(0);
+                        if n >= i + 4 + cl { break; }
+                    }
+                    match s.read(&mut buf[n..]) { Ok(0) | Err(_) => break, Ok(m) => n += m }
+                }
+                h.fetch_add(1, Ordering::SeqCst);
+                let body = r#"{"choices":[{"message":{"content":""}}]}"#;
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            }
+        });
+        (url, hits)
+    }
+
+    fn video() -> Video {
+        serde_json::from_value(serde_json::json!({
+            "id": "x", "playlist_item_id": "", "title": "t", "channel": "c", "description": "d",
+            "published_at": "", "duration_seconds": 10
+        })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn respuesta_vacia_es_error_tras_reintentos() {
+        let (url, hits) = empty_llm_server();
+        let p = Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        let r = p.process(&video(), Some("transcripcion")).await;
+        assert!(r.is_err(), "respuesta vacía no debe ser éxito");
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "1 intento + 2 reintentos");
+    }
 }

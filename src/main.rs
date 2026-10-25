@@ -89,6 +89,10 @@ enum Commands {
         /// Dry run simulation: fetch and process with LLM, but do not write notes, tasks, or alter state
         #[arg(long)]
         dry_run: bool,
+
+        /// Imprime el resumen por stdout (logs a stderr) y no escribe nota, estado, tarea ni archivos
+        #[arg(long, visible_alias = "no-write")]
+        stdout: bool,
     },
     /// Synchronize Fabric patterns from the official repository to ~/.config/fabric/patterns/
     SyncPatterns {
@@ -139,8 +143,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
-        Commands::Process { video, config, patterns, download_video, dry_run } => {
-            cmd_process(video, config, patterns, download_video, dry_run).await
+        Commands::Process { video, config, patterns, download_video, dry_run, stdout } => {
+            cmd_process(video, config, patterns, download_video, dry_run, stdout).await
         }
         Commands::SyncPatterns { force } => cmd_sync_patterns(force).await,
         Commands::State { subcommand } => cmd_state(subcommand).await,
@@ -885,6 +889,7 @@ async fn cmd_process(
     patterns: Vec<String>,
     download_video_flag: bool,
     dry_run: bool,
+    to_stdout: bool,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
@@ -922,13 +927,15 @@ async fn cmd_process(
         get_video_metadata_ytdlp(&cfg.yt_dlp_path(), &resolved_id)?
     };
 
-    println!("══════════════════════════════════════════════════════");
-    println!("  📺 PROCESANDO VIDEO INDIVIDUAL");
-    println!("══════════════════════════════════════════════════════");
-    println!("  Título: {}", video.title);
-    println!("  ID: {}", video.id);
-    println!("  Canal: {}", video.channel);
-    println!();
+    if !to_stdout {
+        println!("══════════════════════════════════════════════════════");
+        println!("  📺 PROCESANDO VIDEO INDIVIDUAL");
+        println!("══════════════════════════════════════════════════════");
+        println!("  Título: {}", video.title);
+        println!("  ID: {}", video.id);
+        println!("  Canal: {}", video.channel);
+        println!();
+    }
 
     // Load state
     let state_path = get_state_path()?;
@@ -968,7 +975,12 @@ async fn cmd_process(
 
     // Resolve yt-dlp path and storage config
     let yt_dlp_path = cfg.yt_dlp_path();
-    let videos_dir = cfg.videos_dir()?;
+    // --stdout: caché de transcripción en un directorio temporal propio, se borra al final
+    let videos_dir = if to_stdout {
+        std::env::temp_dir().join(format!("yt2action-stdout-{}", std::process::id()))
+    } else {
+        cfg.videos_dir()?
+    };
     let quality = cfg.video_quality().to_string();
     let subtitle_langs: Vec<&str> = cfg
         .storage
@@ -993,7 +1005,11 @@ async fn cmd_process(
         &subtitle_langs,
         download_video_flag,
     )
-    .await?;
+    .await;
+    if to_stdout {
+        let _ = std::fs::remove_dir_all(&videos_dir);
+    }
+    let transcript_result = transcript_result?;
 
   // AI processing
         match proc.process(&video, transcript_result.transcript.as_deref()).await {
@@ -1032,14 +1048,30 @@ async fn cmd_process(
                         log::info!("  📜 Fabric pattern output stored");
                         
                         // Log temporal de salidas de Fabric
-                        if let Err(e) = log_fabric_output_temp(&video, pattern_name, &fabric_output) {
-                            log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
+                        if !to_stdout {
+                            if let Err(e) = log_fabric_output_temp(&video, pattern_name, &fabric_output) {
+                                log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
+                            }
                         }
                     }
                     Err(e) => {
                         log::warn!("  ⚠️ Fabric pattern failed: {e}");
                     }
                 }
+            }
+
+            if to_stdout {
+                println!("{}", processed.summary);
+                if !processed.key_points.is_empty() {
+                    println!();
+                    for kp in &processed.key_points {
+                        println!("- {kp}");
+                    }
+                }
+                if let Some(ref f) = processed.fabric_output {
+                    println!("\n{f}");
+                }
+                return Ok(());
             }
 
             // Create Obsidian note
