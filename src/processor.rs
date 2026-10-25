@@ -2,6 +2,19 @@ use crate::types::{Classification, ProcessedVideo, SuggestedAction, Video, Video
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+// ponytail: techo de sanidad fijo; pasarlo a config.toml si hace falta cambiarlo seguido
+const MAX_TOKENS: u32 = 4096;
+
+/// El LLM cortó la respuesta por el tope de tokens (finish_reason "length").
+/// No se reintenta: con el mismo pedido y el mismo tope se corta igual.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "el LLM cortó la respuesta por el tope de tokens (finish_reason=length, \
+     max_tokens={MAX_TOKENS}): está incompleta y no se guarda. Subí MAX_TOKENS en \
+     src/processor.rs o achicá la transcripción (max_transcript_chars)"
+)]
+struct Truncated;
+
 /// AI processor: sends video + transcript to an OpenAI-compatible LLM API
 pub struct Processor {
     client: reqwest::Client,
@@ -247,7 +260,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
         for attempt in 0..=max_retries {
             match self.try_call_llm(messages).await {
                 Ok(response) => return Ok(response),
-                Err(e) if attempt < max_retries => {
+                Err(e) if attempt < max_retries && !e.is::<Truncated>() => {
                     let delay = std::time::Duration::from_secs(2u64.pow(attempt + 1));
                     log::warn!(
                         "  ⚠️ LLM attempt {}/{} failed: {}. Retrying in {:?}...",
@@ -261,7 +274,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
                 Err(e) => {
                     log::error!(
                         "  ❌ LLM failed after {} attempts. Last error: {}",
-                        max_retries + 1,
+                        attempt + 1,
                         e
                     );
                     return Err(e);
@@ -280,8 +293,7 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             "messages": messages,
             "stream": false,
             "temperature": 0.1,
-            // ponytail: techo de sanidad; subir si algún patrón queda truncado
-            "max_tokens": 4096,
+            "max_tokens": MAX_TOKENS,
         });
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -321,6 +333,11 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             .json()
             .await
             .context("Failed to parse LLM API response JSON")?;
+
+        // Respuesta cortada por el tope: incompleta, no se guarda como completa (auditoría #11)
+        if json["choices"][0]["finish_reason"] == "length" {
+            return Err(Truncated.into());
+        }
 
         let content = json["choices"][0]["message"]["content"]
             .as_str()
@@ -596,6 +613,23 @@ pub(crate) mod tests {
         let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
         let r = pr.process_with_pattern(&video(), Some("tr"), "summarize", &patterns_dir("pat-vacio")).await;
         assert!(r.is_err(), "salida vacía del patrón: {r:?}");
+    }
+
+    // Auditoría #11: finish_reason "length" es una respuesta cortada, no una completa.
+    // Es determinista (mismo pedido, mismo tope): no se reintenta.
+    #[tokio::test]
+    async fn respuesta_cortada_por_tope_es_error() {
+        let (url, hits) = llm_server(vec![("# Resumen\n- punto uno\n- punto", "length")]);
+        let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        let r = pr.process_with_pattern(&video(), Some("tr"), "summarize", &patterns_dir("pat-corto")).await;
+        let e = format!("{:#}", r.expect_err("respuesta cortada no es completa"));
+        assert!(e.contains("max_tokens"), "{e}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let (url, hits) = llm_server(vec![(GOOD_JSON, "length")]);
+        let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        assert!(pr.process(&video(), Some("tr")).await.is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     pub(crate) fn video() -> Video {
