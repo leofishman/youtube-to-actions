@@ -36,7 +36,6 @@ pub async fn download_video(
 
     // Step 1: Download transcript using ytt (saves to transcript.txt)
     let transcript_path = video_dir.join("transcript.txt");
-    let transcript_str = transcript_path.to_string_lossy().to_string();
 
     // Cache check: skip download if transcript already exists and is non-empty
     let transcript_cached = transcript_path.exists()
@@ -47,28 +46,7 @@ pub async fn download_video(
     if transcript_cached {
         log::info!("  📄 Transcript cache hit: {:?}", transcript_path);
     } else {
-        let mut ytt_cmd = std::process::Command::new("ytt");
-        ytt_cmd.arg(video_id);
-
-        // Add each language as a separate -l argument
-        for lang in subtitle_langs {
-            ytt_cmd.arg("-l").arg(lang);
-        }
-
-        let sub_output = ytt_cmd
-            .args(["-f", "text"])
-            .args(["-o", &transcript_str])
-            .output()
-            .context("Failed to execute ytt for transcript")?;
-
-        if !sub_output.status.success() {
-            let sub_stderr = String::from_utf8_lossy(&sub_output.stderr);
-            log::warn!(
-                "ytt transcript download exited with {}: {}",
-                sub_output.status,
-                sub_stderr.trim()
-            );
-        }
+        fetch_transcript("ytt", video_id, subtitle_langs, &transcript_path)?;
     }
 
     // Step 2: Download video (if requested)
@@ -97,6 +75,44 @@ pub async fn download_video(
         subtitle_path,
         transcript,
     })
+}
+
+/// Baja la transcripción con `ytt` (o el programa que se pase, para tests) a `dest`.
+/// Si `ytt` falla es error, no "sin subtítulos". `ytt` escribe a un `.part.txt` que se
+/// renombra solo si terminó bien: la caché nunca ve un archivo a medias.
+fn fetch_transcript(ytt: &str, video_id: &str, langs: &[&str], dest: &Path) -> Result<()> {
+    let part = dest.with_extension("part.txt");
+    let mut ytt_cmd = std::process::Command::new(ytt);
+
+    // Add each language as a separate -l argument
+    for lang in langs {
+        ytt_cmd.arg("-l").arg(lang);
+    }
+
+    let sub_output = ytt_cmd
+        .args(["-f", "text"])
+        .arg("-o")
+        .arg(&part)
+        // `--`: un ID que empieza con '-' no se lee como flag
+        .arg("--")
+        .arg(video_id)
+        .output()
+        .context("Failed to execute ytt for transcript")?;
+
+    if !sub_output.status.success() {
+        let _ = std::fs::remove_file(&part);
+        let sub_stderr = String::from_utf8_lossy(&sub_output.stderr);
+        anyhow::bail!(
+            "ytt falló ({}) al bajar la transcripción de {video_id}: {}",
+            sub_output.status,
+            sub_stderr.trim()
+        );
+    }
+    if part.exists() {
+        std::fs::rename(&part, dest)
+            .with_context(|| format!("No se pudo mover {part:?} a {dest:?}"))?;
+    }
+    Ok(())
 }
 
 /// Download the actual video file
@@ -245,6 +261,47 @@ fn download_actual_video(
     video_files.and_then(|v| v.into_iter().next())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::test_util::tmp_dir;
 
+    /// `ytt` falso: guarda sus argumentos en `args`, escribe `texto` en el `-o` y sale con `code`.
+    fn fake_ytt(dir: &Path, texto: &str, code: i32) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("ytt");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n\
+                 while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=\"$2\"; shift; done\n\
+                 printf '{texto}' > \"$out\"\nexit {code}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script.to_string_lossy().into_owned()
+    }
 
+    // Auditoría #5: si ytt falla es un error, y no queda un archivo parcial que la caché acepte.
+    #[test]
+    fn ytt_falla_es_error_sin_cache_parcial() {
+        let dir = tmp_dir("ytt-falla");
+        let dest = dir.join("transcript.txt");
+        let r = fetch_transcript(&fake_ytt(&dir, "parcial", 1), "abc", &["es"], &dest);
+        assert!(r.is_err(), "ytt falló: no es 'sin subtítulos'");
+        assert!(!dest.exists(), "la caché no debe ver un archivo parcial");
+    }
 
+    // Auditoría #5: un ID que empieza con '-' va después de `--`, no como flag.
+    #[test]
+    fn id_con_guion_va_despues_de_doble_guion() {
+        let dir = tmp_dir("ytt-guion");
+        let dest = dir.join("transcript.txt");
+        fetch_transcript(&fake_ytt(&dir, "hola", 0), "-abc123", &["es"], &dest).unwrap();
+        let args = std::fs::read_to_string(dir.join("args")).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(&args[args.len() - 2..], ["--", "-abc123"]);
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "hola");
+    }
+}
