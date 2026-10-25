@@ -351,15 +351,13 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             }
         };
 
-        if v == Value::Null {
-            log::error!("AI returned no usable JSON.");
+        // Sin un `summary` de texto no hay resultado: `{}`, `[]`, un número,
+        // `{"error":...}` o claves en español no cuentan como éxito (auditoría #1).
+        let Some(summary) = v["summary"].as_str().filter(|s| !s.trim().is_empty()) else {
+            log::error!("AI returned no usable JSON (falta \"summary\"): {}", raw.chars().take(200).collect::<String>());
             return None;
-        }
-
-        let summary = v["summary"]
-            .as_str()
-            .unwrap_or("No summary generated.")
-            .to_string();
+        };
+        let summary = summary.to_string();
 
         let key_points: Vec<String> = v["key_points"]
             .as_array()
@@ -503,40 +501,82 @@ fn sanitize_tag(tag: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 
-    /// Servidor HTTP mínimo que siempre responde content vacío (caso TUR9jLhKZmk).
-    fn empty_llm_server() -> (String, Arc<AtomicUsize>) {
+    /// Servidor HTTP mínimo con respuestas fijas: el pedido N recibe `replies[N]`
+    /// (el último se repite). Cada respuesta es (content, finish_reason).
+    pub(crate) fn llm_server(replies: Vec<(&'static str, &'static str)>) -> (String, Arc<AtomicUsize>) {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
         let hits = Arc::new(AtomicUsize::new(0));
         let h = hits.clone();
         std::thread::spawn(move || {
             for mut s in l.incoming().flatten() {
-                let mut buf = [0u8; 65536];
-                let mut n = s.read(&mut buf).unwrap_or(0);
+                let mut buf = vec![0u8; 1 << 20];
+                let mut n = 0;
                 // leer hasta tener el body completo (headers + content-length)
-                while n < buf.len() {
+                loop {
+                    match s.read(&mut buf[n..]) { Ok(0) | Err(_) => break, Ok(m) => n += m }
                     let t = String::from_utf8_lossy(&buf[..n]).to_string();
                     if let Some(i) = t.find("\r\n\r\n") {
                         let cl = t.to_lowercase().split("content-length:").nth(1)
                             .and_then(|x| x.trim().split("\r\n").next()?.parse::<usize>().ok()).unwrap_or(0);
                         if n >= i + 4 + cl { break; }
                     }
-                    match s.read(&mut buf[n..]) { Ok(0) | Err(_) => break, Ok(m) => n += m }
                 }
-                h.fetch_add(1, Ordering::SeqCst);
-                let body = r#"{"choices":[{"message":{"content":""}}]}"#;
+                let i = h.fetch_add(1, Ordering::SeqCst);
+                let (content, finish) = replies[i.min(replies.len() - 1)];
+                let body = serde_json::json!({"choices":[{"message":{"content":content},"finish_reason":finish}]}).to_string();
                 let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
             }
         });
         (url, hits)
     }
 
-    fn video() -> Video {
+    /// Siempre responde content vacío (caso TUR9jLhKZmk).
+    fn empty_llm_server() -> (String, Arc<AtomicUsize>) {
+        llm_server(vec![("", "stop")])
+    }
+
+    pub(crate) const GOOD_JSON: &str = r#"{"summary":"Resumen real","key_points":["a"],"category":"tool","tags":["rust"],"suggested_action":"archive","target_folder":"Learn"}"#;
+
+    fn p() -> Processor {
+        Processor::new("http://127.0.0.1:1", "m", "", vec!["Learn".into()], None)
+    }
+
+    // Auditoría #1: un JSON válido sin los campos esperados no es un resultado usable.
+    #[test]
+    fn json_sin_campos_no_es_usable() {
+        for raw in [
+            "{}",
+            "[]",
+            "42",
+            r#""solo texto""#,
+            r#"{"error":"context length exceeded"}"#,
+            r#"{"resumen":"x","puntos_clave":["a"]}"#,
+            r#"{"summary":"   "}"#,
+        ] {
+            assert!(p().parse_response(raw).is_none(), "{raw} no debe contar como éxito");
+        }
+        assert_eq!(p().parse_response(GOOD_JSON).unwrap().summary, "Resumen real");
+    }
+
+    #[tokio::test]
+    async fn json_vacio_se_reintenta_y_si_persiste_es_error() {
+        let (url, hits) = llm_server(vec![("{}", "stop")]);
+        let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        assert!(pr.process(&video(), Some("tr")).await.is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        let (url, _) = llm_server(vec![("{}", "stop"), (GOOD_JSON, "stop")]);
+        let pr = Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        assert_eq!(pr.process(&video(), Some("tr")).await.unwrap().summary, "Resumen real");
+    }
+
+    pub(crate) fn video() -> Video {
         serde_json::from_value(serde_json::json!({
             "id": "x", "playlist_item_id": "", "title": "t", "channel": "c", "description": "d",
             "published_at": "", "duration_seconds": 10
