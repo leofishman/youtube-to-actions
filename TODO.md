@@ -146,6 +146,41 @@ Este archivo contiene la hoja de ruta y las ideas de mejora para el proyecto `yt
 
 ---
 
+## 🐞 Bug y novedades (2026-10-25)
+
+### 21. Bug: una respuesta del LLM sin JSON se reporta como éxito 🐛 (✅ Hecho en rama fix-llm-vacio-y-stdout; test con LLM falso vacío)
+*   **Qué pasó:** al procesar el video `TUR9jLhKZmk` (panel de un evento de Kleros), el LLM devolvió una respuesta vacía. `parse_response` (`src/processor.rs`) registró `ERROR ... No JSON found` y `Returning default values`, pero el comando imprimió `✅ PROCESAMIENTO EXITOSO` y escribió una nota de 40 KB con la transcripción, **sin resumen ni tags**. Parece válida y no lo es.
+*   **Esperado:** reintentar la llamada (1–2 veces) y, si sigue sin JSON, terminar con error y **no** crear la nota ni marcar el video como procesado (así `run` lo reintenta).
+*   **Pistas, sin verificar:** el error es `EOF while parsing a value at line 1 column 0`, o sea cuerpo vacío. Puede ser tope de tokens o el razonamiento del modelo consumiéndolos (hay un `max_tokens: 4096` sin commitear en `processor.rs`), o corte de conexión en una generación larga (hay un `tcp_keepalive` también sin commitear). Reproducir antes de tocar.
+*   **Hecho cuando:** con una respuesta vacía simulada, el comando sale con error, no escribe nota y no guarda el estado como procesado. Un test que lo cubra.
+
+### 22. Salida sin efectos para uso desde otros programas 🔌 (✅ Hecho: `process <id> --stdout`, probado con jNQXAC9IVRw; sin cambios en estado/vault)
+*   **Descripción:** hoy `process <id>` escribe una nota en Obsidian. Para usarlo como pieza de un plugin hace falta un modo que reciba una URL o un ID, imprima el resumen por stdout y no escriba nada (ni nota, ni estado, ni tarea en Super Productivity). Idea: `--stdout` (o `--no-write`).
+*   **Hecho cuando:** `yt2action process <url> --stdout` imprime el resumen y no deja archivos nuevos.
+
+### 23. Plugin de ejemplo para Lapacho: resumir un video de YouTube 🌳 (Hecho en rama `plugin-ejemplo-youtube-summary` de lapacho, sin push. Probado con ytt real + fabric falso; falta probar con fabric real, modelo chico/transcripción larga, fallback yt-dlp y Android)
+*   **Idea:** copiás un link de YouTube, mandás el clip al plugin y vuelve un resumen. Cada usuario baja la transcripción desde su máquina; no hay servicio pago que raspe YouTube.
+*   **Forma:** un ejemplo más en `lapacho/plugins/examples/` (`youtube-summary.json` + un `.py` corto, al estilo de `fact-check`). **No** se reutiliza `yt2action` entero: baja la transcripción con `ytt` o `yt-dlp` y la pasa a Fabric con `summarize`.
+*   **Sin verificar:** si un modelo chico (Gemma E2B) maneja una transcripción larga (la de 17 min pesó ~22 KB); cómo se comporta en Android. Lapacho tiene `main` protegida: va en rama y por PR; el merge es de Leo.
+
+### 24. Hallazgos de la auditoría del 2026-10-25 🔍 (rama fix-llm-vacio-y-stdout)
+Cada uno arreglado tiene un test que falló antes del arreglo (`cargo test`, LLM y `ytt` falsos). No se corrió contra el LLM real ni YouTube.
+*   ✅ **#1** JSON válido sin `summary` (`{}`, `[]`, `{"error":...}`, claves en español) → reintento y, si persiste, error.
+*   ✅ **#2** Si la nota falla, el video no se marca, no se mueve ni se crea tarea; `process` sale con error.
+*   ✅ **#5** Si `ytt` falla es error; el ID va tras `--`; la caché no acepta parciales (`.part.txt` + rename). Probado con un `ytt` falso; **sin verificar** con el `ytt` real.
+*   ✅ **#12** `sync-patterns` usa `data/patterns/` (fallback `patterns/`), sparse checkout (~4,5 MB contra ~47 MB) y temporal propio. Probado contra GitHub con `cargo test -- --ignored`.
+*   ✅ **#6** `state.json` se guarda después de cada video. Un fallo de descarga ya no corta el run: arreglado, pero **sin test** del loop (`cmd_run` necesita OAuth de YouTube).
+*   ✅ **#3** Nota `<slug>-<id>.md`; no pisa un archivo que no es de ese video. Un video procesado antes, si se reprocesa, genera nota con el nombre nuevo.
+*   ✅ **#7** `strip_html` no se come el texto ante `<letra` sin `>`.
+*   ✅ **#4** Patrón vacío o fallido: error en el log, línea en el reporte de `run` y de `process`; `--stdout` sale con error. La rama de `--stdout` no tiene test propio (`cmd_process` necesita yt-dlp/YouTube); sí `run_patterns`.
+*   ✅ **#8** `state.json` corrupto → error claro, no se pisa. `state reset` sigue funcionando como salida explícita.
+*   ✅ **#9** Con `processed_playlist_id`, el estado se marca y guarda antes de mover; un add/remove fallido no reprocesa.
+*   ✅ **#11** `finish_reason: "length"` → error que sugiere subir `MAX_TOKENS` (constante en `processor.rs`), sin reintentar.
+*   ⏳ **#10** Timeouts (pendiente).
+*   ⏳ **#13**, **#14**, **#15** (pendientes; ver la auditoría).
+
+---
+
 ## 🔮 Ideas a Futuro Lejano
 
 ### 19. Web UI Ligera o TUI

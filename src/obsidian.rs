@@ -10,7 +10,7 @@ pub fn create_note(
     dry_run: bool,
 ) -> Result<std::path::PathBuf> {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let filename = format!("{}.md", slugify(&processed.video.title));
+    let filename = note_filename(&processed.video.title, &processed.video.id);
     let raw_folder = folder_override.unwrap_or(&processed.target_folder);
 
     // Defense-in-depth: reject path traversal attempts in target_folder
@@ -24,7 +24,8 @@ pub fn create_note(
         raw_folder
     };
     let dir = vault_path.join(folder);
-    let path = dir.join(&filename);
+    // Un reproceso reescribe la nota existente del video, aunque tenga el nombre de antes del ID
+    let path = find_note_of_video(&dir, &processed.video.id).unwrap_or_else(|| dir.join(&filename));
 
     if dry_run {
         log::info!("  📝 [Simulado] Note would be created at: {:?}", path);
@@ -159,11 +160,44 @@ comments: {comments}
 
     content.push_str(&format!("\n## Transcripción\n\n{}\n", transcript_text));
 
+    // No pisar una nota que no es de este video (auditoría #3). La del mismo video
+    // sí se reescribe: es un reproceso.
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let own = format!("url: https://youtube.com/watch?v={}\n", processed.video.id);
+        if !existing.contains(&own) {
+            anyhow::bail!("Ya existe {:?} y no es la nota de este video: no se sobrescribe", path);
+        }
+    }
+
     std::fs::write(&path, &content)
         .with_context(|| format!("Failed to write note: {:?}", path))?;
 
     log::info!("Created Obsidian note: {:?}", path);
     Ok(path)
+}
+
+/// La nota de este video en `dir`, si ya existe (la identifica su línea `url:`).
+fn find_note_of_video(dir: &Path, id: &str) -> Option<std::path::PathBuf> {
+    let own = format!("url: https://youtube.com/watch?v={id}\n");
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.extension().is_some_and(|x| x == "md")
+            && std::fs::read_to_string(p).is_ok_and(|c| c.contains(&own))
+    })
+}
+
+/// `<slug>-<id>.md`: el ID evita que dos títulos con el mismo slug se pisen y que un
+/// título sin caracteres válidos dé `.md` (auditoría #3).
+fn note_filename(title: &str, id: &str) -> String {
+    let id: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let name = [slugify(title), id]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("{}.md", if name.is_empty() { "sin-titulo".into() } else { name })
 }
 
 fn slugify(title: &str) -> String {
@@ -180,4 +214,62 @@ fn slugify(title: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::test_util::{processed_video, tmp_dir};
+
+    // Auditoría #3: dos títulos distintos con el mismo slug no se pisan.
+    #[test]
+    fn titulos_distintos_no_se_pisan() {
+        let vault = tmp_dir("slugs");
+        let a = create_note(&vault, &processed_video("idA", "Rust Tutorial!"), None, false).unwrap();
+        let b = create_note(&vault, &processed_video("idB", "rust tutorial?"), None, false).unwrap();
+        assert_ne!(a, b);
+        assert!(std::fs::read_to_string(&a).unwrap().contains("watch?v=idA"));
+        assert!(std::fs::read_to_string(&b).unwrap().contains("watch?v=idB"));
+    }
+
+    // Auditoría #3: un título sin caracteres válidos no da un archivo `.md`.
+    #[test]
+    fn titulo_sin_caracteres_validos_no_da_punto_md() {
+        let vault = tmp_dir("slug-vacio");
+        for t in ["🔥🔥🔥", "日本語のタイトル"] {
+            let p = create_note(&vault, &processed_video("idC", t), None, false).unwrap();
+            assert_ne!(p.file_name().unwrap(), ".md", "{t}");
+        }
+    }
+
+    // Auditoría #3: no se sobrescribe una nota existente que no es de este video.
+    #[test]
+    fn no_pisa_nota_de_otro_video() {
+        let vault = tmp_dir("slug-ajena");
+        let v = processed_video("idD", "Hola");
+        let path = create_note(&vault, &v, None, true).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "nota escrita a mano").unwrap();
+        assert!(create_note(&vault, &v, None, false).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "nota escrita a mano");
+
+        // la nota del mismo video sí se reescribe (reproceso con --force)
+        std::fs::remove_file(&path).unwrap();
+        create_note(&vault, &v, None, false).unwrap();
+        create_note(&vault, &v, None, false).unwrap();
+    }
+
+    // Un reproceso reescribe la nota con el nombre de antes del ID, no crea otra.
+    #[test]
+    fn reproceso_reusa_la_nota_de_nombre_viejo() {
+        let vault = tmp_dir("nota-vieja");
+        let v = processed_video("idE", "Hola Mundo");
+        let nueva = create_note(&vault, &v, None, true).unwrap();
+        let vieja = nueva.parent().unwrap().join("hola-mundo.md");
+        std::fs::create_dir_all(vieja.parent().unwrap()).unwrap();
+        std::fs::write(&vieja, "url: https://youtube.com/watch?v=idE\nvieja").unwrap();
+        let p = create_note(&vault, &v, None, false).unwrap();
+        assert_eq!(p, vieja);
+        assert!(!nueva.exists());
+    }
 }

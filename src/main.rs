@@ -38,7 +38,7 @@ enum Commands {
         force: bool,
 
         /// Apply Fabric patterns for rich content analysis (comma-separated or multiple flags, e.g. "summarize,extract_wisdom")
-        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        #[arg(short, long, visible_alias = "pattern", value_delimiter = ',', num_args = 1..)]
         patterns: Vec<String>,
 
         /// Actually download the video file locally (default: false, only fetches transcript)
@@ -79,7 +79,7 @@ enum Commands {
         config: Option<PathBuf>,
 
         /// Use Fabric patterns for analysis (comma-separated or multiple flags, e.g. "summarize,extract_wisdom")
-        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        #[arg(short, long, visible_alias = "pattern", value_delimiter = ',', num_args = 1..)]
         patterns: Vec<String>,
 
         /// Actually download the video file locally (default: false, only fetches transcript)
@@ -89,6 +89,14 @@ enum Commands {
         /// Dry run simulation: fetch and process with LLM, but do not write notes, tasks, or alter state
         #[arg(long)]
         dry_run: bool,
+
+        /// Imprime el resumen por stdout (logs a stderr) y no escribe nota, estado, tarea ni archivos
+        #[arg(long, visible_alias = "no-write")]
+        stdout: bool,
+
+        /// Reprocess even if the video is already in the processed history
+        #[arg(long)]
+        force: bool,
     },
     /// Synchronize Fabric patterns from the official repository to ~/.config/fabric/patterns/
     SyncPatterns {
@@ -139,8 +147,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
-        Commands::Process { video, config, patterns, download_video, dry_run } => {
-            cmd_process(video, config, patterns, download_video, dry_run).await
+        Commands::Process { video, config, patterns, download_video, dry_run, stdout, force } => {
+            cmd_process(video, config, patterns, download_video, dry_run, stdout, force).await
         }
         Commands::SyncPatterns { force } => cmd_sync_patterns(force).await,
         Commands::State { subcommand } => cmd_state(subcommand).await,
@@ -186,7 +194,7 @@ async fn cmd_run(
 
     // Load state
     let state_path = get_state_path()?;
-    let mut state = load_state(&state_path);
+    let mut state = load_state(&state_path)?;
 
     // Collect playlists to process with their SP settings and overrides
     let playlists_to_process: Vec<_> = {
@@ -326,7 +334,7 @@ async fn cmd_run(
         } else {
             log::info!("  📥 Fetching transcript for {}...", video.id);
         }
-        let transcript_result = downloader::download_video(
+        let transcript_result = match downloader::download_video(
             &yt_dlp_path,
             &video.id,
             &videos_dir,
@@ -334,7 +342,16 @@ async fn cmd_run(
             &subtitle_langs,
             download_video_flag,
         )
-        .await?;
+        .await
+        {
+            Ok(t) => t,
+            // Un video que falla no corta los demás (auditoría #6)
+            Err(e) => {
+                log::error!("  ❌ Failed to fetch transcript for '{}': {e:#}", video.title);
+                results.push(error_result(video, &e));
+                continue;
+            }
+        };
 
         // Step 2: AI processing
         match proc.process(video, transcript_result.transcript.as_deref()).await {
@@ -352,49 +369,14 @@ async fn cmd_run(
                     playlist_patterns.clone()
                 };
 
-                let mut pattern_execution_times = Vec::new();
-
-                for pattern_name in &patterns_to_run {
-                    let patterns_dir = format!(
-                        "{}/.config/fabric/patterns",
-                        std::env::var("HOME").unwrap_or_default()
-                    );
-                    log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
-
-                    let pattern_start = std::time::Instant::now();
-                    let pattern_res = proc
-                        .process_with_pattern(
-                            video,
-                            transcript_result.transcript.as_deref(),
-                            pattern_name,
-                            &patterns_dir,
-                        )
-                        .await;
-
-                    let duration_str = format!("{:.1}s", pattern_start.elapsed().as_secs_f64());
-                    pattern_execution_times.push((pattern_name.clone(), duration_str));
-
-                    match pattern_res {
-                        Ok(fabric_output) => {
-                            if processed.fabric_output.is_none() {
-                                processed.fabric_output = Some(fabric_output.clone());
-                            } else {
-                                let mut current = processed.fabric_output.take().unwrap();
-                                current.push_str(&format!("\n\n---\n\n# Patrón: {}\n\n{}", pattern_name, fabric_output));
-                                processed.fabric_output = Some(current);
-                            }
-                            log::info!("  📜 Fabric pattern output stored");
-                            
-                            // Log temporal de salidas de Fabric
-                            if let Err(e) = log_fabric_output_temp(video, pattern_name, &fabric_output) {
-                                log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("  ⚠️ Fabric pattern failed: {e}");
-                        }
-                    }
-                }
+                let (pattern_execution_times, pattern_errors) = run_patterns(
+                    &proc,
+                    &mut processed,
+                    &patterns_to_run,
+                    &fabric_patterns_dir(),
+                    true,
+                )
+                .await;
                 let mut result = ProcessResult {
                     video_title: video.title.clone(),
                     video_url: format!("https://youtube.com/watch?v={}", video.id),
@@ -406,24 +388,54 @@ async fn cmd_run(
                     tags: processed.classification.tags.clone(),
                     error: None,
                     pattern_execution_times,
+                    pattern_errors,
                 };
 
-                // Create Obsidian note (primary output)
-                let active_vault = playlist_obsidian_vault.as_ref().or(cfg.output.obsidian_vault.as_ref());
-                if let Some(ref vault) = active_vault {
-                    let vault_path = PathBuf::from(vault);
-                    match obsidian::create_note(&vault_path, &processed, playlist_obsidian_folder.as_deref(), dry_run) {
-                        Ok(path) => {
-                            result.note_path = Some(path.to_string_lossy().to_string());
-                            if dry_run {
-                                log::info!("  📝 [Simulado] Note would be created at: {:?}", path);
-                            } else {
-                                log::info!("  📝 Note created: {:?}", path);
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("  ❌ Failed to create note: {e}");
-                        }
+                // Nota en Obsidian (salida principal), marca en el estado y mover de
+                // playlist. Si la nota falla, el video queda como error: sin tarea, sin
+                // mover y sin marcar.
+                let active_vault = playlist_obsidian_vault
+                    .as_ref()
+                    .or(cfg.output.obsidian_vault.as_ref())
+                    .map(PathBuf::from);
+                // Mover a la playlist de procesados, si hay una configurada
+                let move_video = async || -> anyhow::Result<bool> {
+                    let Some(processed_pl) = cfg.youtube.processed_playlist_id.as_ref() else {
+                        return Ok(false);
+                    };
+                    if dry_run {
+                        log::info!("  ✅ [Simulado] Video would be moved to processed playlist: {processed_pl}");
+                        return Ok(true);
+                    }
+                    yt.add_to_playlist(processed_pl, &video.id)
+                        .await
+                        .context("Could not add to processed playlist")?;
+                    yt.remove_from_playlist(&video.playlist_item_id)
+                        .await
+                        .context("Added to processed playlist but could not remove from source")?;
+                    log::info!("  ✅ Moved to processed playlist: {processed_pl}");
+                    Ok(true)
+                };
+                match finish_video(
+                    active_vault.as_deref(),
+                    &processed,
+                    playlist_obsidian_folder.as_deref(),
+                    dry_run,
+                    &mut state,
+                    &state_path,
+                    move_video,
+                )
+                .await
+                {
+                    Ok((path, moved)) => {
+                        result.note_path = path.map(|p| p.to_string_lossy().to_string());
+                        result.moved_to_processed = moved;
+                    }
+                    Err(e) => {
+                        log::error!("  ❌ Nota o estado fallaron, el video no queda procesado: {e:#}");
+                        result.error = Some(format!("{e:#}"));
+                        results.push(result);
+                        continue;
                     }
                 }
 
@@ -480,67 +492,11 @@ async fn cmd_run(
                     }
                 }
 
-                // Post-processing: move video to processed playlist
-                if let Some(ref processed_pl) = cfg.youtube.processed_playlist_id {
-                    if dry_run {
-                        result.moved_to_processed = true;
-                        log::info!("  ✅ [Simulado] Video would be moved to processed playlist: {processed_pl}");
-                    } else {
-                        match yt
-                            .add_to_playlist(processed_pl, &video.id)
-                            .await
-                        {
-                            Ok(_new_item_id) => {
-                                // Remove from source playlist
-                                match yt.remove_from_playlist(&video.playlist_item_id).await {
-                                    Ok(()) => {
-                                        result.moved_to_processed = true;
-                                        log::info!(
-                                            "  ✅ Moved to processed playlist: {processed_pl}"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "  ⚠️ Added to processed playlist but could not \
-                                             remove from source: {e}"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "  ⚠️ Could not add to processed playlist: {e}"
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Mark as processed (only if not moving — if moving, it's already gone)
-                if cfg.youtube.processed_playlist_id.is_none() {
-                    if dry_run {
-                        log::info!("  💾 [Simulado] Video would be marked as processed in local state");
-                    } else {
-                        state.mark_processed(video.id.clone());
-                    }
-                }
-
                 results.push(result);
             }
             Err(e) => {
                 log::error!("  ❌ Failed to process '{}': {e}", video.title);
-                results.push(ProcessResult {
-                    video_title: video.title.clone(),
-                    video_url: format!("https://youtube.com/watch?v={}", video.id),
-                    target_folder: String::new(),
-                    note_path: None,
-                    sp_task_id: None,
-                    moved_to_processed: false,
-                    suggested_action: types::SuggestedAction::SaveForLater,
-                    tags: vec![],
-                    error: Some(e.to_string()),
-                    pattern_execution_times: vec![],
-                });
+                results.push(error_result(video, &e));
             }
         }
     }
@@ -548,10 +504,8 @@ async fn cmd_run(
         total_processed += to_process.len();
     }
 
-    // Save state (only for videos not moved to another playlist)
-    if !dry_run {
-        save_state(&state_path, &state)?;
-    } else {
+    // El estado ya se guardó después de cada video (record_note)
+    if dry_run {
         log::info!("💾 [Simulado] State changes would be saved to {:?}", state_path);
     }
 
@@ -559,6 +513,22 @@ async fn cmd_run(
     print_report(&results, &cfg, start_time.elapsed(), dry_run);
 
     Ok(())
+}
+
+fn error_result(video: &types::Video, e: &anyhow::Error) -> ProcessResult {
+    ProcessResult {
+        video_title: video.title.clone(),
+        video_url: format!("https://youtube.com/watch?v={}", video.id),
+        target_folder: String::new(),
+        note_path: None,
+        sp_task_id: None,
+        moved_to_processed: false,
+        suggested_action: types::SuggestedAction::SaveForLater,
+        tags: vec![],
+        error: Some(format!("{e:#}")),
+        pattern_execution_times: vec![],
+        pattern_errors: vec![],
+    }
 }
 
 /// Print a beautiful summary report after processing
@@ -614,6 +584,9 @@ fn print_report(results: &[ProcessResult], cfg: &Config, total_duration: std::ti
             for (p_name, duration) in &r.pattern_execution_times {
                 println!("         - {}: {}", p_name, duration);
             }
+        }
+        for err in &r.pattern_errors {
+            println!("     ⚠️  Patrón fallido: {err}");
         }
         if let Some(ref err) = r.error {
             println!("     ❌  Error: {err}");
@@ -855,17 +828,23 @@ fn get_state_path() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn load_state(path: &PathBuf) -> types::ProcessState {
+fn load_state(path: &std::path::Path) -> anyhow::Result<types::ProcessState> {
     if !path.exists() {
-        return types::ProcessState::new();
+        return Ok(types::ProcessState::new());
     }
-    match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => types::ProcessState::new(),
-    }
+    // Corrupto o ilegible: error, nunca un estado vacío que después se guarde encima
+    // y haga reprocesar todo (auditoría #8).
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("No se pudo leer el estado {path:?}"))?;
+    serde_json::from_str(&content).with_context(|| {
+        format!(
+            "El estado {path:?} está corrupto; no se toca. Revisalo a mano, o borralo con \
+             `yt2action state reset` (se reprocesan todos los videos)"
+        )
+    })
 }
 
-fn save_state(path: &PathBuf, state: &types::ProcessState) -> anyhow::Result<()> {
+fn save_state(path: &std::path::Path, state: &types::ProcessState) -> anyhow::Result<()> {
     let content = serde_json::to_string_pretty(state)?;
     // Atomic write: write to temp file first, then rename.
     // rename() is atomic on Linux (ext4/btrfs), so if the process crashes
@@ -885,6 +864,8 @@ async fn cmd_process(
     patterns: Vec<String>,
     download_video_flag: bool,
     dry_run: bool,
+    to_stdout: bool,
+    force: bool,
 ) -> anyhow::Result<()> {
     let cfg = load_config(config_path)?;
 
@@ -922,17 +903,26 @@ async fn cmd_process(
         get_video_metadata_ytdlp(&cfg.yt_dlp_path(), &resolved_id)?
     };
 
-    println!("══════════════════════════════════════════════════════");
-    println!("  📺 PROCESANDO VIDEO INDIVIDUAL");
-    println!("══════════════════════════════════════════════════════");
-    println!("  Título: {}", video.title);
-    println!("  ID: {}", video.id);
-    println!("  Canal: {}", video.channel);
-    println!();
+    if !to_stdout {
+        println!("══════════════════════════════════════════════════════");
+        println!("  📺 PROCESANDO VIDEO INDIVIDUAL");
+        println!("══════════════════════════════════════════════════════");
+        println!("  Título: {}", video.title);
+        println!("  ID: {}", video.id);
+        println!("  Canal: {}", video.channel);
+        println!();
+    }
 
     // Load state
     let state_path = get_state_path()?;
-    let mut state = load_state(&state_path);
+    // --stdout no toca el estado: no lo lee (un state.json corrupto no lo bloquea)
+    let mut state = if to_stdout { types::ProcessState::new() } else { load_state(&state_path)? };
+
+    // Igual que `run`: lo ya procesado se saltea salvo con --force (la simulación y --stdout no tocan el estado)
+    if !force && !to_stdout && !dry_run && state.is_processed(&video.id) {
+        println!("  ⏭️  Ya procesado: {}. Usá --force para reprocesarlo.", video.id);
+        return Ok(());
+    }
 
     // Build valid folder list for the AI
     let mut valid_folders = vec![
@@ -968,7 +958,12 @@ async fn cmd_process(
 
     // Resolve yt-dlp path and storage config
     let yt_dlp_path = cfg.yt_dlp_path();
-    let videos_dir = cfg.videos_dir()?;
+    // --stdout: caché de transcripción en un directorio temporal propio, se borra al final
+    let videos_dir = if to_stdout {
+        std::env::temp_dir().join(format!("yt2action-stdout-{}", std::process::id()))
+    } else {
+        cfg.videos_dir()?
+    };
     let quality = cfg.video_quality().to_string();
     let subtitle_langs: Vec<&str> = cfg
         .storage
@@ -993,7 +988,11 @@ async fn cmd_process(
         &subtitle_langs,
         download_video_flag,
     )
-    .await?;
+    .await;
+    if to_stdout {
+        let _ = std::fs::remove_dir_all(&videos_dir);
+    }
+    let transcript_result = transcript_result?;
 
   // AI processing
         match proc.process(&video, transcript_result.transcript.as_deref()).await {
@@ -1005,69 +1004,37 @@ async fn cmd_process(
                     .map(|p| p.to_string_lossy().to_string());
 
             // If Fabric patterns are specified, run the second phase
-            for pattern_name in &patterns {
-                let patterns_dir = format!(
-                    "{}/.config/fabric/patterns",
-                    std::env::var("HOME").unwrap_or_default()
+            let (_, pattern_errors) =
+                run_patterns(&proc, &mut processed, &patterns, &fabric_patterns_dir(), !to_stdout).await;
+
+            if to_stdout {
+                // Salida para otros programas: un patrón fallido es error, no salida parcial (auditoría #4)
+                anyhow::ensure!(
+                    pattern_errors.is_empty(),
+                    "Fallaron patrones de Fabric: {}",
+                    pattern_errors.join("; ")
                 );
-                log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
 
-                match proc
-                    .process_with_pattern(
-                        &video,
-                        transcript_result.transcript.as_deref(),
-                        pattern_name,
-                        &patterns_dir,
-                    )
+                println!("{}", processed.summary);
+                if !processed.key_points.is_empty() {
+                    println!();
+                    for kp in &processed.key_points {
+                        println!("- {kp}");
+                    }
+                }
+                if let Some(ref f) = processed.fabric_output {
+                    println!("\n{f}");
+                }
+                return Ok(());
+            }
+
+            // Nota + estado. Si la nota falla: error, sin marcar ni imprimir éxito.
+            let vault = cfg.output.obsidian_vault.as_ref().map(PathBuf::from);
+            let (note_path, _) =
+                finish_video(vault.as_deref(), &processed, None, dry_run, &mut state, &state_path, async || Ok(false))
                     .await
-                {
-                    Ok(fabric_output) => {
-                        if processed.fabric_output.is_none() {
-                            processed.fabric_output = Some(fabric_output.clone());
-                        } else {
-                            let mut current = processed.fabric_output.take().unwrap();
-                            current.push_str(&format!("\n\n---\n\n# Patrón: {}\n\n{}", pattern_name, fabric_output));
-                            processed.fabric_output = Some(current);
-                        }
-                        log::info!("  📜 Fabric pattern output stored");
-                        
-                        // Log temporal de salidas de Fabric
-                        if let Err(e) = log_fabric_output_temp(&video, pattern_name, &fabric_output) {
-                            log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("  ⚠️ Fabric pattern failed: {e}");
-                    }
-                }
-            }
-
-            // Create Obsidian note
-            let mut note_path = None;
-            if let Some(ref vault) = cfg.output.obsidian_vault {
-                let vault_path = PathBuf::from(vault);
-                match obsidian::create_note(&vault_path, &processed, None, dry_run) {
-                    Ok(path) => {
-                        if dry_run {
-                            log::info!("  📝 [Simulado] Note would be created: {:?}", path);
-                        } else {
-                            log::info!("  📝 Note created: {:?}", path);
-                        }
-                        note_path = Some(path.to_string_lossy().to_string());
-                    }
-                    Err(e) => {
-                        log::error!("  ❌ Failed to create note: {e}");
-                    }
-                }
-            }
-
-            // Mark as processed
-            if dry_run {
-                log::info!("  💾 [Simulado] Video would be marked as processed in local state");
-            } else {
-                state.mark_processed(video.id.clone());
-                save_state(&state_path, &state)?;
-            }
+                    .context("No se pudo crear la nota; el video no se marcó como procesado")?;
+            let note_path = note_path.map(|p| p.to_string_lossy().to_string());
 
             // Print report
             println!("══════════════════════════════════════════════════════");
@@ -1089,6 +1056,9 @@ async fn cmd_process(
             println!("  🔗  https://youtube.com/watch?v={}", video.id);
             println!("  🏷️  {}", processed.classification.tags.join(", "));
             println!("  💡  {}", processed.classification.suggested_action);
+            for err in &pattern_errors {
+                println!("  ⚠️  Patrón fallido (no está en la nota): {err}");
+            }
             println!();
             println!("  Resumen:");
             for line in processed.summary.lines() {
@@ -1104,6 +1074,91 @@ async fn cmd_process(
     }
 
     Ok(())
+}
+
+fn fabric_patterns_dir() -> String {
+    format!("{}/.config/fabric/patterns", std::env::var("HOME").unwrap_or_default())
+}
+
+/// Corre los patrones de Fabric y agrega su salida a `processed.fabric_output`.
+/// Devuelve los tiempos por patrón y los que fallaron o volvieron vacíos (auditoría #4),
+/// para que el que llama los muestre: no son un éxito silencioso.
+async fn run_patterns(
+    proc: &processor::Processor,
+    processed: &mut types::ProcessedVideo,
+    patterns: &[String],
+    patterns_dir: &str,
+    log_to_file: bool,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut times = Vec::new();
+    let mut errors = Vec::new();
+    for pattern_name in patterns {
+        log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
+        let start = std::time::Instant::now();
+        let res = proc
+            .process_with_pattern(&processed.video, processed.transcript.as_deref(), pattern_name, patterns_dir)
+            .await;
+        times.push((pattern_name.clone(), format!("{:.1}s", start.elapsed().as_secs_f64())));
+
+        match res {
+            Ok(fabric_output) => {
+                match processed.fabric_output.as_mut() {
+                    None => processed.fabric_output = Some(fabric_output.clone()),
+                    Some(current) => current.push_str(&format!(
+                        "\n\n---\n\n# Patrón: {}\n\n{}",
+                        pattern_name, fabric_output
+                    )),
+                }
+                log::info!("  📜 Fabric pattern output stored");
+
+                // Log temporal de salidas de Fabric
+                if log_to_file {
+                    if let Err(e) = log_fabric_output_temp(&processed.video, pattern_name, &fabric_output) {
+                        log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("  ❌ Falló el patrón de Fabric {pattern_name}: {e:#}");
+                errors.push(format!("{pattern_name}: {e:#}"));
+            }
+        }
+    }
+    (times, errors)
+}
+
+/// Cierre de un video ya analizado, compartido por `run` y `process`: nota en
+/// Obsidian, marca en el estado (guardada) y mover de playlist. Si la nota falla
+/// devuelve error sin marcar (auditoría #2). Devuelve la nota y si se movió.
+async fn finish_video(
+    vault: Option<&std::path::Path>,
+    processed: &types::ProcessedVideo,
+    folder: Option<&str>,
+    dry_run: bool,
+    state: &mut types::ProcessState,
+    state_path: &std::path::Path,
+    move_video: impl AsyncFnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<(Option<PathBuf>, bool)> {
+    let note = match vault {
+        Some(vault) => Some(obsidian::create_note(vault, processed, folder, dry_run)?),
+        None => None,
+    };
+    // Se marca y guarda siempre, por video (auditoría #6) y ANTES de mover: si el
+    // add/remove de playlist falla, el video no queda para reprocesar (auditoría #9).
+    if dry_run {
+        log::info!("  💾 [Simulado] Video would be marked as processed in local state");
+    } else {
+        state.mark_processed(processed.video.id.clone());
+        save_state(state_path, state)?;
+    }
+    let moved = match move_video().await {
+        Ok(moved) => moved,
+        Err(e) => {
+            log::warn!("  ⚠️ {e:#}");
+            false
+        }
+    };
+    Ok((note, moved))
 }
 
 async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
@@ -1125,42 +1180,10 @@ async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
 
     println!("📥 Sincronizando patrones de Fabric desde el repositorio oficial...");
     
-    // Create a temporary directory in the workspace
-    let tmp_dir = std::path::PathBuf::from("/tmp/yt2action_fabric_sync");
-    if tmp_dir.exists() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-    }
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    println!("   Clonando https://github.com/danielmiessler/fabric.git (shallow clone)...");
-    
-    // Run git clone --depth 1
-    let status = std::process::Command::new("git")
-        .args(&["clone", "--depth", "1", "https://github.com/danielmiessler/fabric.git", "."])
-        .current_dir(&tmp_dir)
-        .status()?;
-
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        anyhow::bail!("Error: Falló la clonación del repositorio de Fabric.");
-    }
-
-    let source_patterns = tmp_dir.join("patterns");
-    if !source_patterns.exists() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        anyhow::bail!("Error: No se encontró la carpeta 'patterns' en el repositorio clonado.");
-    }
-
-    println!("   Copiando patrones a {:?}", target_dir);
-    
-    // Create target dir if it doesn't exist
-    std::fs::create_dir_all(&target_dir)?;
-
-    // Copy patterns recursively
-    copy_dir_all(&source_patterns, &target_dir)?;
-
-    // Clean up
+    let tmp_dir = unique_tmp_dir("yt2action-fabric")?;
+    let res = fetch_fabric_patterns(&tmp_dir, &target_dir);
     let _ = std::fs::remove_dir_all(&tmp_dir);
+    res?;
 
     println!("✅ ¡Sincronización completada con éxito!");
     println!("   Los patrones de Fabric están listos en {:?}", target_dir);
@@ -1168,12 +1191,59 @@ async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Clona solo las carpetas de patrones de Fabric en `tmp_dir` (sparse checkout: ~4 MB
+/// contra ~47 MB del clon superficial completo) y las copia a `target_dir`.
+fn fetch_fabric_patterns(tmp_dir: &std::path::Path, target_dir: &std::path::Path) -> anyhow::Result<()> {
+    println!("   Clonando las carpetas de patrones de https://github.com/danielmiessler/fabric.git ...");
+    let git = |args: &[&str]| -> anyhow::Result<()> {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp_dir)
+            .status()
+            .context("No se pudo ejecutar git")?;
+        anyhow::ensure!(status.success(), "Error: falló `git {}`", args.join(" "));
+        Ok(())
+    };
+    git(&["clone", "-q", "--depth", "1", "--filter=blob:none", "--sparse",
+          "https://github.com/danielmiessler/fabric.git", "."])?;
+    git(&["sparse-checkout", "set", "data/patterns", "patterns"])?;
+
+    let source_patterns = find_patterns_dir(tmp_dir).context(
+        "Error: no se encontró 'data/patterns' ni 'patterns' en el repositorio de Fabric.",
+    )?;
+    println!("   Copiando patrones de {:?} a {:?}", source_patterns, target_dir);
+    copy_dir_all(&source_patterns, target_dir)?;
+    Ok(())
+}
+
+/// Carpeta de patrones en un clon de Fabric: `data/patterns/` (actual) o `patterns/` (versiones viejas).
+fn find_patterns_dir(repo: &std::path::Path) -> Option<PathBuf> {
+    ["data/patterns", "patterns"]
+        .into_iter()
+        .map(|p| repo.join(p))
+        .find(|p| p.is_dir())
+}
+
+/// Directorio temporal nuevo y propio. `create_dir` falla si ya existe: nunca reusa ni
+/// borra uno ajeno (antes era un `/tmp/yt2action_fabric_sync` fijo).
+fn unique_tmp_dir(prefix: &str) -> std::io::Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let d = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&d)?;
+    Ok(d)
+}
+
 async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
     let state_path = get_state_path()?;
-    let mut state = load_state(&state_path);
+    // reset no lee el estado: es la salida explícita para un state.json corrupto
+    let load = || load_state(&state_path);
 
     match subcommand {
         StateSubcommands::Show => {
+            let state = load()?;
             if state.processed_ids.is_empty() {
                 println!("No hay videos registrados en el historial de procesados.");
             } else {
@@ -1195,11 +1265,11 @@ async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            state.processed_ids.clear();
-            save_state(&state_path, &state)?;
+            save_state(&state_path, &types::ProcessState::new())?;
             println!("✅ Historial de videos procesados borrado con éxito.");
         }
         StateSubcommands::Unmark { video } => {
+            let mut state = load()?;
             let id = extract_video_id(&video);
             if state.is_processed(&id) {
                 state.processed_ids.retain(|x| x != &id);
@@ -1244,6 +1314,125 @@ fn extract_video_id(input: &str) -> String {
         }
     }
     input.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::test_util::{processed_video, tmp_dir};
+
+    // Auditoría #2: si la nota no se puede escribir, el video no queda procesado.
+    #[tokio::test]
+    async fn nota_fallida_no_marca_procesado() {
+        let dir = tmp_dir("nota-fallida");
+        let vault = dir.join("vault");
+        std::fs::write(&vault, "un archivo, no un directorio").unwrap();
+        let mut state = types::ProcessState::new();
+        let r = finish_video(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), async || Ok(false)).await;
+        assert!(r.is_err(), "la nota falló: no es éxito");
+        assert!(!state.is_processed("abc"));
+    }
+
+    // Auditoría #8: un state.json corrupto es un error claro y no se pisa.
+    #[test]
+    fn estado_corrupto_es_error_y_no_se_pisa() {
+        let path = tmp_dir("estado-corrupto").join("state.json");
+        std::fs::write(&path, "{\"processed_ids\": [\"a\", ").unwrap();
+        let e = load_state(&path).expect_err("corrupto no es un estado vacío");
+        assert!(format!("{e:#}").contains("state.json"), "{e:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"processed_ids\": [\"a\", ");
+    }
+
+    // Auditoría #9: con playlist de procesados, el estado se marca y guarda ANTES de
+    // mover, y un add/remove fallido no deja el video para reprocesar.
+    #[tokio::test]
+    async fn con_playlist_de_procesados_marca_antes_de_mover() {
+        let dir = tmp_dir("mover");
+        let state_path = dir.join("state.json");
+        let mut state = types::ProcessState::new();
+        let sp = state_path.clone();
+        let r = finish_video(
+            Some(&dir.join("vault")),
+            &processed_video("abc", "T"),
+            None,
+            false,
+            &mut state,
+            &state_path,
+            async || {
+                let on_disk = std::fs::read_to_string(&sp).unwrap_or_default();
+                anyhow::ensure!(on_disk.contains("abc"), "se movió sin marcar antes");
+                anyhow::bail!("add_to_playlist falló")
+            },
+        )
+        .await;
+        let (_, moved) = r.expect("un fallo al mover no es un fallo del video");
+        assert!(!moved);
+        assert!(state.is_processed("abc"), "sin marca, el próximo run lo reprocesa");
+        assert!(std::fs::read_to_string(&state_path).unwrap_or_default().contains("abc"));
+    }
+
+    // Auditoría #4: un patrón vacío o que falla queda en la lista de fallidos, no en la nota.
+    #[tokio::test]
+    async fn patron_fallido_se_reporta() {
+        let (url, _) = processor::tests::llm_server(vec![("", "stop")]);
+        let proc = processor::Processor::new(&url, "m", "", vec!["Learn".into()], None);
+        let mut processed = processed_video("abc", "T");
+        let dir = processor::tests::patterns_dir("pat-fallido");
+        let patterns = vec!["summarize".to_string(), "no_existe".to_string()];
+        let (times, errors) = run_patterns(&proc, &mut processed, &patterns, &dir, false).await;
+        assert_eq!(times.len(), 2);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].starts_with("summarize:") && errors[1].starts_with("no_existe:"));
+        assert!(processed.fabric_output.is_none());
+    }
+
+    // Auditoría #6: el estado se guarda en disco después de cada video, no al final del run.
+    #[tokio::test]
+    async fn estado_se_guarda_tras_cada_video() {
+        let dir = tmp_dir("estado-por-video");
+        let state_path = dir.join("state.json");
+        let mut state = types::ProcessState::new();
+        for id in ["v1", "v2"] {
+            finish_video(Some(&dir.join("vault")), &processed_video(id, id), None, false, &mut state, &state_path, async || Ok(false)).await.unwrap();
+            let on_disk = std::fs::read_to_string(&state_path).unwrap_or_default();
+            assert!(on_disk.contains(id), "{id} tiene que estar en disco ya");
+        }
+    }
+
+    // Auditoría #12: Fabric movió los patrones a data/patterns/; patterns/ queda de fallback.
+    #[test]
+    fn patrones_en_data_patterns_con_fallback() {
+        let repo = tmp_dir("fabric-repo");
+        assert_eq!(find_patterns_dir(&repo), None);
+        std::fs::create_dir_all(repo.join("patterns")).unwrap();
+        assert_eq!(find_patterns_dir(&repo), Some(repo.join("patterns")));
+        std::fs::create_dir_all(repo.join("data/patterns")).unwrap();
+        assert_eq!(find_patterns_dir(&repo), Some(repo.join("data/patterns")));
+    }
+
+    // Baja de GitHub: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn sync_patterns_contra_github() {
+        let tmp = unique_tmp_dir("yt2a-test-clone").unwrap();
+        let target = tmp_dir("fabric-target");
+        let r = fetch_fabric_patterns(&tmp, &target);
+        let _ = std::fs::remove_dir_all(&tmp);
+        r.unwrap();
+        assert!(target.join("summarize/system.md").is_file());
+        assert!(target.join("extract_wisdom/system.md").is_file());
+    }
+
+    // Auditoría #12: el clon va a un directorio temporal propio, no a uno fijo en /tmp.
+    #[test]
+    fn directorio_temporal_unico() {
+        let a = unique_tmp_dir("yt2a-test-sync").unwrap();
+        let b = unique_tmp_dir("yt2a-test-sync").unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && b.is_dir());
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
 }
 
 fn get_video_metadata_ytdlp(yt_dlp_path: &str, video_id: &str) -> anyhow::Result<crate::types::Video> {
