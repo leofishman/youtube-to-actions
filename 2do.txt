@@ -4,3 +4,4 @@
 - [ ] 2026-10-25 Decidir qué hacer con el WIP sin commitear de processor.rs/main.rs (keepalive, max_tokens 4096, alias --pattern)
 - [x] 2026-10-25 Auditoría: #1 #2 #3 #4 #5 #6 #7 #8 #9 #11 #12 arreglados con test (TODO #24). Sin test: loop de run (#6) y --stdout (#4); ytt real sin probar (#5)
 - [ ] 2026-10-25 Auditoría: pendientes #10 (timeouts), #13, #14, #15 (TODO #24)
+- [ ] 2026-10-27 Bug: MAX_TOKENS fijo (processor.rs:6) no sirve con modelos de razonamiento (Agents-A1): el razonamiento cuenta en el tope y la clasificación sale cortada (finish_reason=length), con lo que --patterns nunca llega a Fabric. Parche provisional: 4096 → 16384 (2026-10-27, tarda minutos por video). Arreglo: mandar `chat_template_kwargs: {"enable_thinking": false}` en la request (verificado contra A1: 2 tokens, sin razonamiento), hacer MAX_TOKENS configurable en config.toml y reintentar con más margen cuando finish_reason=length (process(), línea ~58). Ver TODO #25

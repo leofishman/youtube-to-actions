@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 // ponytail: techo de sanidad fijo; pasarlo a config.toml si hace falta cambiarlo seguido
-const MAX_TOKENS: u32 = 4096;
+const MAX_TOKENS: u32 = 16384;
 
 /// El LLM cortó la respuesta por el tope de tokens (finish_reason "length").
 /// No se reintenta: con el mismo pedido y el mismo tope se corta igual.
@@ -294,6 +294,8 @@ IMPORTANT: The "target_folder" value MUST be exactly one of the AVAILABLE FOLDER
             "stream": false,
             "temperature": 0.1,
             "max_tokens": MAX_TOKENS,
+            // llama-server: apaga el razonamiento de modelos tipo A1 (otros servidores lo ignoran)
+            "chat_template_kwargs": {"enable_thinking": false},
         });
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();

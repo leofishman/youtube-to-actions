@@ -179,6 +179,11 @@ Cada uno arreglado tiene un test que falló antes del arreglo (`cargo test`, LLM
 *   ⏳ **#10** Timeouts (pendiente).
 *   ⏳ **#13**, **#14**, **#15** (pendientes; ver la auditoría).
 
+### 25. MAX_TOKENS fijo y modelos de razonamiento
+*   **Problema:** `MAX_TOKENS = 4096` (`processor.rs:6`) cuenta razonamiento y respuesta juntos; con Agents-A1 la clasificación sale cortada (`finish_reason=length`) y `--patterns` nunca llega a Fabric. `call_llm` (líneas ~308-316) trata el corte como error fatal y `process()` solo reintenta respuestas sin JSON.
+*   **Arreglo propuesto:** (1) enviar `chat_template_kwargs: {"enable_thinking": false}` en la request; (2) `max_tokens` configurable en `config.toml`; (3) reintentar con más margen ante `length`. Con (1) A1 contestó en 2 tokens sin razonamiento.
+*   **Estado 2026-10-27:** (1) aplicado en `try_call_llm` (sin commitear) y `MAX_TOKENS` en 16384; los dos videos fallidos se reprocesaron bien (~2 min c/u, el mayor `extract_wisdom` ≈ 3.5k tokens). Falta (2) y (3).
+
 ---
 
 ## 🔮 Ideas a Futuro Lejano
