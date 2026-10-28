@@ -60,6 +60,7 @@ sudo cp target/release/yt2action /usr/local/bin/
 | **`credentials.json`**        | OAuth client secret — place in project root                            | Downloaded during OAuth client creation above                                                                                   |
 | **YouTube Data API v3**       | Must be enabled for your project                                       | [Enable here](https://console.cloud.google.com/apis/library/youtube.googleapis.com)                                             |
 | **ytt & yaydl**               | Transcript extraction and video downloading                            | Install via your package manager or GitHub                                                                                      |
+| **yt-dlp, ffmpeg + ASR** (opcional) | Solo para videos sin subtítulos: audio + transcripción local | Ver [Videos sin subtítulos](#videos-sin-subtítulos-respaldo-de-audio--asr) |
 | **Super Productivity**        | Receives tasks via Local REST API                                      | Settings → Misc → **Enable local REST API** (port 3876)                                                                         |
 | **LLM server**                | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below                                                                                       |
 | **Obsidian vault** (optional) | Notes are sorted into folders by theme                                 | Set `obsidian_vault` in config                                                                                                  |
@@ -168,6 +169,31 @@ yt2action process xQuKdFNK7tk --patterns summarize,extract_wisdom
 > [!TIP]
 > **Zero-OAuth Setup for Public Videos**: When you process a public video or URL using `yt2action process`, the application automatically uses `yt-dlp` local metadata scraping under the hood. It completely bypasses Google OAuth consent screens, browser requests, and requires **no Google credentials or API keys** to run successfully.
 
+
+### Videos sin subtítulos (respaldo de audio + ASR)
+
+Orden: `ytt` primero (con la caché `transcript.txt`). Solo si `ytt` dice que el video no tiene subtítulos ("Transcripts disabled" / "No transcript found") se prueba el respaldo; cualquier otro error de `ytt` sigue siendo error.
+
+El respaldo baja **solo el audio** con `yt-dlp` y lo pasa a un comando de transcripción que configurás vos (`asr_command`, en `[storage]`):
+
+```toml
+[storage]
+yt_dlp_path = "yt-dlp"
+# {audio} = archivo de audio; {out} (opcional) = archivo de salida. Sin {out} se lee stdout.
+asr_command = "ffmpeg -loglevel error -y -i {audio} -ar 16000 -ac 1 {audio}.wav && whisper-cli -m ~/models/ggml-large-v3-turbo.bin -f {audio}.wav -nt -np"
+# yt_dlp_cookies_from_browser = "firefox"   # opcional
+```
+
+Sin `asr_command` no hay respaldo y el error dice: *el video no tiene subtítulos todavía; reintentá en unas horas o configurá asr_command*. Un live en curso, un estreno o un live recién terminado (sin audio todavía) da error claro y no se reintenta.
+
+> [!WARNING]
+> **Riesgo de baneo de IP.** Descargar con `yt-dlp` es lo que más expone la IP a que YouTube la limite (HTTP 429, captcha, "Sign in to confirm you're not a bot"). Por eso el respaldo:
+> - es lo único que descarga audio: un video con subtítulos nunca llama a `yt-dlp`;
+> - hace una sola descarga por video y reusa `audio.*` y `transcript.txt` si ya existen (borrá el audio a mano si querés bajarlo de nuevo);
+> - pasa límites prudentes: `--limit-rate 2M --sleep-requests 1 --retries 2 --fragment-retries 2 --extractor-retries 1`, un video a la vez, nunca en bucle ni en paralelo;
+> - ante 429/captcha/"Sign in" **corta y no reintenta**; esperá unas horas antes de volver a correr. `yt_dlp_cookies_from_browser` puede ayudar si pide login, pero ata la cuenta a la actividad de `yt-dlp`: usalo con criterio.
+>
+> Con `run` sobre muchos videos sin subtítulos, usá `--limit` bajo. (La ruta `--download-video`, que baja el video entero, es aparte y no tiene estos límites.)
 
 ### `yt2action list`
 

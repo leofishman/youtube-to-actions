@@ -83,6 +83,11 @@ pub struct StorageConfig {
     pub quality: Option<String>,
     /// Path to yt-dlp binary
     pub yt_dlp_path: Option<String>,
+    /// Navegador del que yt-dlp toma cookies (ej. "firefox"). Solo lo usa el respaldo de audio.
+    pub yt_dlp_cookies_from_browser: Option<String>,
+    /// Comando que transcribe audio, para videos sin subtítulos. Plantilla con `{audio}` y,
+    /// opcional, `{out}` (si no está, la transcripción sale por stdout). Sin esto no hay respaldo.
+    pub asr_command: Option<String>,
     /// Whether to keep subtitle files alongside the video
     pub keep_subtitles: Option<bool>,
     /// Preferred subtitle languages (comma-separated, e.g. "en,es,es-419")
@@ -95,6 +100,8 @@ impl Default for StorageConfig {
             videos_dir: None,
             quality: Some("worst".to_string()),
             yt_dlp_path: None,
+            yt_dlp_cookies_from_browser: None,
+            asr_command: None,
             keep_subtitles: Some(true),
             subtitle_langs: Some("en,es,es-419,en-US".to_string()),
         }
@@ -146,6 +153,14 @@ impl Config {
             .yt_dlp_path
             .clone()
             .unwrap_or_else(|| "yt-dlp".to_string())
+    }
+
+    /// Respaldo para videos sin subtítulos (audio con yt-dlp + ASR externo)
+    pub fn audio_fallback(&self) -> crate::downloader::AudioFallback {
+        crate::downloader::AudioFallback {
+            cookies_from_browser: self.storage.yt_dlp_cookies_from_browser.clone(),
+            asr_command: self.storage.asr_command.clone(),
+        }
     }
 
     /// Get video quality

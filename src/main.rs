@@ -335,6 +335,7 @@ async fn cmd_run(
 
         // Resolve yt-dlp path and storage config
         let yt_dlp_path = cfg.yt_dlp_path();
+        let audio_fallback = cfg.audio_fallback();
         let videos_dir = cfg.videos_dir()?;
         let quality = cfg.video_quality().to_string();
         let subtitle_langs: Vec<&str> = cfg
@@ -362,6 +363,7 @@ async fn cmd_run(
                 &quality,
                 &subtitle_langs,
                 download_video_flag,
+                &audio_fallback,
             )
             .await
             {
@@ -813,6 +815,13 @@ llm_model = "llama3.2"
 # Ruta al binario yt-dlp (si no está en PATH)
 # yt_dlp_path = "yt-dlp"
 
+# Videos SIN subtítulos: se baja solo el audio con yt-dlp (una vez, con límites) y se
+# transcribe con este comando. Plantilla: {audio} = archivo de audio; {out} (opcional) = archivo
+# de salida; sin {out} la transcripción se lee de stdout. Sin esto, esos videos dan error.
+# asr_command = "ffmpeg -loglevel error -y -i {audio} -ar 16000 -ac 1 {audio}.wav && whisper-cli -m ~/models/ggml-large-v3-turbo.bin -f {audio}.wav -nt -np"
+# Cookies del navegador para yt-dlp (solo en ese respaldo; úsalo si YouTube pide "Sign in")
+# yt_dlp_cookies_from_browser = "firefox"
+
 # Idiomas de subtítulos preferidos
 # subtitle_langs = "en,es,es-419,en-US"
 
@@ -1009,6 +1018,7 @@ async fn cmd_process(
 
     // Resolve yt-dlp path and storage config
     let yt_dlp_path = cfg.yt_dlp_path();
+    let audio_fallback = cfg.audio_fallback();
     // --stdout: caché de transcripción en un directorio temporal propio, se borra al final
     let videos_dir = if to_stdout {
         std::env::temp_dir().join(format!("yt2action-stdout-{}", std::process::id()))
@@ -1038,6 +1048,7 @@ async fn cmd_process(
         &quality,
         &subtitle_langs,
         download_video_flag,
+        &audio_fallback,
     )
     .await;
     if to_stdout {

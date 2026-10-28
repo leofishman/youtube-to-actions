@@ -29,6 +29,7 @@ pub async fn download_video(
     quality: &str,
     subtitle_langs: &[&str],
     download_video_flag: bool,
+    fallback: &AudioFallback,
 ) -> Result<DownloadResult> {
     let video_dir = videos_dir.join(video_id);
     std::fs::create_dir_all(&video_dir)
@@ -46,7 +47,16 @@ pub async fn download_video(
     if transcript_cached {
         log::info!("  📄 Transcript cache hit: {:?}", transcript_path);
     } else {
-        fetch_transcript("ytt", video_id, subtitle_langs, &transcript_path)?;
+        if !fetch_transcript("ytt", video_id, subtitle_langs, &transcript_path)? {
+            // Sin subtítulos: único caso en que se baja audio (riesgo de baneo, ver README)
+            transcribe_audio_fallback(
+                yt_dlp_path,
+                video_id,
+                &video_dir,
+                fallback,
+                &transcript_path,
+            )?;
+        }
     }
 
     // Step 2: Download video (if requested)
@@ -77,10 +87,21 @@ pub async fn download_video(
     })
 }
 
+/// Config del respaldo para videos sin subtítulos
+#[derive(Debug, Clone, Default)]
+pub struct AudioFallback {
+    pub cookies_from_browser: Option<String>,
+    pub asr_command: Option<String>,
+}
+
+const SIN_SUBTITULOS: &str =
+    "el video no tiene subtítulos todavía; reintentá en unas horas o configurá asr_command";
+
 /// Baja la transcripción con `ytt` (o el programa que se pase, para tests) a `dest`.
-/// Si `ytt` falla es error, no "sin subtítulos". `ytt` escribe a un `.part.txt` que se
+/// `Ok(true)` = bajó; `Ok(false)` = el video no tiene subtítulos (único caso que habilita el
+/// respaldo de audio). Cualquier otro fallo de `ytt` es error. `ytt` escribe a un `.part.txt` que se
 /// renombra solo si terminó bien: la caché nunca ve un archivo a medias.
-fn fetch_transcript(ytt: &str, video_id: &str, langs: &[&str], dest: &Path) -> Result<()> {
+fn fetch_transcript(ytt: &str, video_id: &str, langs: &[&str], dest: &Path) -> Result<bool> {
     let part = dest.with_extension("part.txt");
     let mut ytt_cmd = std::process::Command::new(ytt);
 
@@ -102,6 +123,11 @@ fn fetch_transcript(ytt: &str, video_id: &str, langs: &[&str], dest: &Path) -> R
     if !sub_output.status.success() {
         let _ = std::fs::remove_file(&part);
         let sub_stderr = String::from_utf8_lossy(&sub_output.stderr);
+        let low = sub_stderr.to_lowercase();
+        // Mensajes de ytt: "Transcripts disabled for video" / "No transcript found for video"
+        if low.contains("transcripts disabled") || low.contains("no transcript found") {
+            return Ok(false);
+        }
         anyhow::bail!(
             "ytt falló ({}) al bajar la transcripción de {video_id}: {}",
             sub_output.status,
@@ -112,7 +138,133 @@ fn fetch_transcript(ytt: &str, video_id: &str, langs: &[&str], dest: &Path) -> R
         std::fs::rename(&part, dest)
             .with_context(|| format!("No se pudo mover {part:?} a {dest:?}"))?;
     }
-    Ok(())
+    Ok(true)
+}
+
+/// Respaldo: audio con yt-dlp (una sola descarga, cacheada) + ASR externo → `dest`.
+fn transcribe_audio_fallback(
+    yt_dlp: &str,
+    video_id: &str,
+    video_dir: &Path,
+    fb: &AudioFallback,
+    dest: &Path,
+) -> Result<()> {
+    let Some(asr) = fb.asr_command.as_deref() else {
+        anyhow::bail!("{SIN_SUBTITULOS}");
+    };
+    let audio = match find_audio(video_dir) {
+        Some(a) => {
+            log::info!("  🎧 Audio cache hit: {a:?}");
+            a
+        }
+        None => fetch_audio(
+            yt_dlp,
+            video_id,
+            video_dir,
+            fb.cookies_from_browser.as_deref(),
+        )?,
+    };
+    log::info!("  🗣️ Sin subtítulos: transcribiendo {audio:?} con asr_command...");
+    run_asr(asr, &audio, dest)
+}
+
+/// Audio ya descargado (`audio.<ext>`, sin restos `.part`/`.ytdl`)
+fn find_audio(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_stem().is_some_and(|s| s == "audio")
+                && p.extension()
+                    .is_some_and(|e| e != "part" && e != "ytdl" && e != "wav")
+        })
+}
+
+/// Baja SOLO el audio, una vez, sin reintentos agresivos. Si YouTube limita o pide captcha
+/// se corta (reintentar empeora el baneo de IP). Un live en curso/recién terminado no se baja.
+fn fetch_audio(yt_dlp: &str, video_id: &str, dir: &Path, cookies: Option<&str>) -> Result<PathBuf> {
+    let mut cmd = std::process::Command::new(yt_dlp);
+    cmd.args(["-f", "bestaudio", "--no-playlist", "--limit-rate", "2M"])
+        .args([
+            "--sleep-requests",
+            "1",
+            "--retries",
+            "2",
+            "--fragment-retries",
+            "2",
+        ])
+        .args(["--extractor-retries", "1", "--abort-on-error"])
+        // live en curso o recién terminado (aún procesándose): yt-dlp lo saltea, no baja infinito
+        .args(["--match-filters", "!is_live & live_status != post_live"]);
+    if let Some(b) = cookies {
+        cmd.args(["--cookies-from-browser", b]);
+    }
+    let out = cmd
+        .arg("-o")
+        .arg(dir.join("audio.%(ext)s"))
+        .arg(format!("https://www.youtube.com/watch?v={video_id}"))
+        .output()
+        .with_context(|| format!("No se pudo ejecutar {yt_dlp}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let low = stderr.to_lowercase();
+    if ["429", "too many requests", "captcha", "sign in to confirm"]
+        .iter()
+        .any(|k| low.contains(k))
+    {
+        anyhow::bail!(
+            "YouTube limitó o bloqueó a yt-dlp ({}): no se reintenta para no empeorar el baneo de IP. \
+             Esperá unas horas o probá yt_dlp_cookies_from_browser",
+            stderr.lines().last().unwrap_or("").trim()
+        );
+    }
+    let live =
+        low.contains("live") || low.contains("premiere") || low.contains("does not pass filter");
+    if let Some(a) = find_audio(dir) {
+        return Ok(a);
+    }
+    if live {
+        anyhow::bail!(
+            "el video es un live en curso, un estreno o terminó hace poco y no tiene audio disponible todavía; reintentá más tarde"
+        );
+    }
+    anyhow::bail!(
+        "yt-dlp no dejó audio para {video_id} ({}): {}",
+        out.status,
+        stderr.trim()
+    )
+}
+
+/// Ejecuta `asr_command` (plantilla con `{audio}` y opcional `{out}`) y deja el texto en `dest`
+fn run_asr(template: &str, audio: &Path, dest: &Path) -> Result<()> {
+    let q = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
+    let part = dest.with_extension("part.txt");
+    let use_out = template.contains("{out}");
+    let cmd = template
+        .replace("{audio}", &q(audio))
+        .replace("{out}", &q(&part));
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .output()
+        .context("No se pudo ejecutar asr_command")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&part);
+        anyhow::bail!(
+            "asr_command falló ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    if !use_out {
+        std::fs::write(&part, &out.stdout)?;
+    }
+    let texto = std::fs::read_to_string(&part).unwrap_or_default();
+    if texto.trim().is_empty() {
+        let _ = std::fs::remove_file(&part);
+        anyhow::bail!("asr_command no produjo texto para {audio:?}");
+    }
+    std::fs::rename(&part, dest).with_context(|| format!("No se pudo mover {part:?} a {dest:?}"))
 }
 
 /// Download the actual video file
@@ -323,5 +475,167 @@ mod tests {
         let args: Vec<&str> = args.lines().collect();
         assert_eq!(&args[args.len() - 2..], ["--", "-abc123"]);
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "hola");
+    }
+
+    /// Script falso `name` en `dir` con el cuerpo `sh` dado
+    fn fake(dir: &Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join(name);
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script.to_string_lossy().into_owned()
+    }
+
+    /// yt-dlp falso: cuenta llamadas en `calls`, guarda args en `args` y crea `audio.m4a` en `-o`
+    fn fake_ytdlp_ok(dir: &Path) -> String {
+        fake(
+            dir,
+            "yt-dlp",
+            "d=$(dirname \"$0\"); echo x >> \"$d/calls\"; printf '%s\\n' \"$@\" > \"$d/args\"\n\
+             while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=\"$2\"; shift; done\n\
+             printf 'hola desde el audio' > \"${out%.%(ext)s}.m4a\"",
+        )
+    }
+
+    fn fb(asr: Option<&str>) -> AudioFallback {
+        AudioFallback {
+            cookies_from_browser: None,
+            asr_command: asr.map(String::from),
+        }
+    }
+
+    #[test]
+    fn ytt_sin_subtitulos_es_ok_false_y_otro_error_sigue_siendo_error() {
+        let dir = tmp_dir("ytt-sinsub");
+        let dest = dir.join("transcript.txt");
+        let ytt = fake(
+            &dir,
+            "ytt",
+            "echo 'Transcripts disabled for video: abc' >&2; exit 1",
+        );
+        assert!(!fetch_transcript(&ytt, "abc", &["es"], &dest).unwrap());
+        let ytt = fake(&dir, "ytt2", "echo 'connection reset' >&2; exit 1");
+        assert!(fetch_transcript(&ytt, "abc", &["es"], &dest).is_err());
+    }
+
+    #[test]
+    fn respaldo_sin_asr_command_dice_que_configurar() {
+        let dir = tmp_dir("fb-sinasr");
+        let yt = fake_ytdlp_ok(&dir);
+        let e = transcribe_audio_fallback(&yt, "abc", &dir, &fb(None), &dir.join("transcript.txt"))
+            .unwrap_err();
+        assert!(format!("{e}").contains("configurá asr_command"));
+        assert!(
+            !dir.join("calls").exists(),
+            "sin asr no se debe tocar YouTube"
+        );
+    }
+
+    #[test]
+    fn respaldo_baja_audio_una_vez_con_limites_y_reusa_cache() {
+        let dir = tmp_dir("fb-ok");
+        let dest = dir.join("transcript.txt");
+        let yt = fake_ytdlp_ok(&dir);
+        let mut f = fb(Some("cat {audio}"));
+        f.cookies_from_browser = Some("firefox".into());
+        transcribe_audio_fallback(&yt, "abc", &dir, &f, &dest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "hola desde el audio"
+        );
+        let args = std::fs::read_to_string(dir.join("args")).unwrap();
+        for a in [
+            "--limit-rate",
+            "--sleep-requests",
+            "--retries",
+            "firefox",
+            "--no-playlist",
+        ] {
+            assert!(args.contains(a), "falta {a}");
+        }
+        // transcript.txt perdido: el audio cacheado evita una segunda descarga
+        std::fs::remove_file(&dest).unwrap();
+        transcribe_audio_fallback(&yt, "abc", &dir, &f, &dest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn asr_con_out_lee_el_archivo() {
+        let dir = tmp_dir("fb-out");
+        let dest = dir.join("transcript.txt");
+        let yt = fake_ytdlp_ok(&dir);
+        transcribe_audio_fallback(
+            &yt,
+            "abc",
+            &dir,
+            &fb(Some("tr a-z A-Z < {audio} > {out}")),
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "HOLA DESDE EL AUDIO"
+        );
+    }
+
+    #[test]
+    fn asr_que_falla_o_sin_texto_es_error_sin_cache() {
+        let dir = tmp_dir("fb-asrmal");
+        let dest = dir.join("transcript.txt");
+        let yt = fake_ytdlp_ok(&dir);
+        assert!(transcribe_audio_fallback(&yt, "abc", &dir, &fb(Some("exit 3")), &dest).is_err());
+        assert!(transcribe_audio_fallback(&yt, "abc", &dir, &fb(Some("true")), &dest).is_err());
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn ytdlp_429_corta_sin_reintentar() {
+        let dir = tmp_dir("fb-429");
+        let yt = fake(
+            &dir,
+            "yt-dlp",
+            "echo x >> \"$(dirname \"$0\")/calls\"; echo 'HTTP Error 429: Too Many Requests' >&2; exit 1",
+        );
+        let e = transcribe_audio_fallback(
+            &yt,
+            "abc",
+            &dir,
+            &fb(Some("cat {audio}")),
+            &dir.join("transcript.txt"),
+        )
+        .unwrap_err();
+        assert!(format!("{e}").contains("baneo"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn video_live_sin_audio_es_error_claro() {
+        let dir = tmp_dir("fb-live");
+        let yt = fake(
+            &dir,
+            "yt-dlp",
+            "echo 'abc does not pass filter !is_live, skipping' >&2; exit 0",
+        );
+        let e = transcribe_audio_fallback(
+            &yt,
+            "abc",
+            &dir,
+            &fb(Some("cat {audio}")),
+            &dir.join("transcript.txt"),
+        )
+        .unwrap_err();
+        assert!(format!("{e}").contains("live"));
     }
 }
