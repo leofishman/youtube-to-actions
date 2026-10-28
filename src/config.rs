@@ -88,6 +88,8 @@ pub struct StorageConfig {
     /// Comando que transcribe audio, para videos sin subtítulos. Plantilla con `{audio}` y,
     /// opcional, `{out}` (si no está, la transcripción sale por stdout). Sin esto no hay respaldo.
     pub asr_command: Option<String>,
+    /// Tope diario de ejecuciones de yt-dlp (audio de respaldo y video juntos). Default 5.
+    pub max_downloads_per_day: Option<u32>,
     /// Whether to keep subtitle files alongside the video
     pub keep_subtitles: Option<bool>,
     /// Preferred subtitle languages (comma-separated, e.g. "en,es,es-419")
@@ -102,6 +104,7 @@ impl Default for StorageConfig {
             yt_dlp_path: None,
             yt_dlp_cookies_from_browser: None,
             asr_command: None,
+            max_downloads_per_day: None,
             keep_subtitles: Some(true),
             subtitle_langs: Some("en,es,es-419,en-US".to_string()),
         }
@@ -156,11 +159,15 @@ impl Config {
     }
 
     /// Respaldo para videos sin subtítulos (audio con yt-dlp + ASR externo)
-    pub fn audio_fallback(&self) -> crate::downloader::AudioFallback {
-        crate::downloader::AudioFallback {
+    pub fn audio_fallback(&self) -> Result<crate::downloader::AudioFallback> {
+        let dirs = directories::ProjectDirs::from("com", "leofishman", "yt2action")
+            .context("Failed to find data directory")?;
+        Ok(crate::downloader::AudioFallback {
+            max_downloads_per_day: self.storage.max_downloads_per_day.unwrap_or(5),
+            counter_path: dirs.data_dir().join("downloads.json"),
             cookies_from_browser: self.storage.yt_dlp_cookies_from_browser.clone(),
             asr_command: self.storage.asr_command.clone(),
-        }
+        })
     }
 
     /// Get video quality

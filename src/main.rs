@@ -335,7 +335,7 @@ async fn cmd_run(
 
         // Resolve yt-dlp path and storage config
         let yt_dlp_path = cfg.yt_dlp_path();
-        let audio_fallback = cfg.audio_fallback();
+        let audio_fallback = cfg.audio_fallback()?;
         let videos_dir = cfg.videos_dir()?;
         let quality = cfg.video_quality().to_string();
         let subtitle_langs: Vec<&str> = cfg
@@ -1018,7 +1018,7 @@ async fn cmd_process(
 
     // Resolve yt-dlp path and storage config
     let yt_dlp_path = cfg.yt_dlp_path();
-    let audio_fallback = cfg.audio_fallback();
+    let audio_fallback = cfg.audio_fallback()?;
     // --stdout: caché de transcripción en un directorio temporal propio, se borra al final
     let videos_dir = if to_stdout {
         std::env::temp_dir().join(format!("yt2action-stdout-{}", std::process::id()))

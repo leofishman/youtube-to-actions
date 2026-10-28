@@ -61,7 +61,13 @@ pub async fn download_video(
 
     // Step 2: Download video (if requested)
     let video_path = if download_video_flag {
-        download_actual_video(yt_dlp_path, video_id, &video_dir, quality, subtitle_langs)
+        Some(download_actual_video(
+            yt_dlp_path,
+            video_id,
+            &video_dir,
+            quality,
+            fallback,
+        )?)
     } else {
         log::info!("Skipping video download as per configuration.");
         None
@@ -90,8 +96,46 @@ pub async fn download_video(
 /// Config del respaldo para videos sin subtítulos
 #[derive(Debug, Clone, Default)]
 pub struct AudioFallback {
+    /// Solo si el usuario lo configura; nunca se prueban navegadores por su cuenta
     pub cookies_from_browser: Option<String>,
     pub asr_command: Option<String>,
+    /// Tope diario de ejecuciones de yt-dlp (audio de respaldo y video juntos)
+    pub max_downloads_per_day: u32,
+    /// Contador persistente del día (JSON); fuera del directorio de videos
+    pub counter_path: PathBuf,
+}
+
+/// Cuenta una descarga en `path` (se reinicia si cambió el día) o falla si ya se llegó al tope.
+/// Se cuenta ANTES de llamar a yt-dlp: un intento que falla también expone la IP.
+fn reserve_download(path: &Path, max: u32, today: &str) -> Result<()> {
+    let count = match std::fs::read_to_string(path) {
+        Ok(c) => {
+            let v: serde_json::Value = serde_json::from_str(&c).with_context(|| {
+                format!("El contador de descargas {path:?} está corrupto; revisalo o borralo")
+            })?;
+            if v["date"] == today {
+                v["count"].as_u64().unwrap_or(0) as u32
+            } else {
+                0
+            }
+        }
+        Err(_) => 0,
+    };
+    if count >= max {
+        anyhow::bail!(
+            "tope diario de descargas alcanzado ({count}/{max} hoy): no se llama a yt-dlp. \
+             Reintentá mañana o subí max_downloads_per_day en [storage]"
+        );
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::json!({"date": today, "count": count + 1}).to_string(),
+    )?;
+    std::fs::rename(&tmp, path).with_context(|| format!("No se pudo guardar {path:?}"))
 }
 
 const SIN_SUBTITULOS: &str =
@@ -157,12 +201,7 @@ fn transcribe_audio_fallback(
             log::info!("  🎧 Audio cache hit: {a:?}");
             a
         }
-        None => fetch_audio(
-            yt_dlp,
-            video_id,
-            video_dir,
-            fb.cookies_from_browser.as_deref(),
-        )?,
+        None => fetch_audio(yt_dlp, video_id, video_dir, fb)?,
     };
     log::info!("  🗣️ Sin subtítulos: transcribiendo {audio:?} con asr_command...");
     run_asr(asr, &audio, dest)
@@ -181,11 +220,33 @@ fn find_audio(dir: &Path) -> Option<PathBuf> {
         })
 }
 
-/// Baja SOLO el audio, una vez, sin reintentos agresivos. Si YouTube limita o pide captcha
-/// se corta (reintentar empeora el baneo de IP). Un live en curso/recién terminado no se baja.
-fn fetch_audio(yt_dlp: &str, video_id: &str, dir: &Path, cookies: Option<&str>) -> Result<PathBuf> {
+/// Baja SOLO el audio (una vez, ver `run_ytdlp`)
+fn fetch_audio(yt_dlp: &str, video_id: &str, dir: &Path, fb: &AudioFallback) -> Result<PathBuf> {
+    run_ytdlp(
+        yt_dlp,
+        video_id,
+        "bestaudio",
+        &dir.join("audio.%(ext)s"),
+        fb,
+        || find_audio(dir),
+    )
+}
+
+/// ÚNICO punto que ejecuta yt-dlp: un intento, límites prudentes, tope diario. Si YouTube limita
+/// o pide captcha se corta (reintentar empeora el baneo de IP). Un live en curso/recién terminado
+/// no se baja. `find` devuelve el archivo resultante.
+fn run_ytdlp(
+    yt_dlp: &str,
+    video_id: &str,
+    format: &str,
+    out: &Path,
+    fb: &AudioFallback,
+    find: impl Fn() -> Option<PathBuf>,
+) -> Result<PathBuf> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    reserve_download(&fb.counter_path, fb.max_downloads_per_day, &today)?;
     let mut cmd = std::process::Command::new(yt_dlp);
-    cmd.args(["-f", "bestaudio", "--no-playlist", "--limit-rate", "2M"])
+    cmd.args(["-f", format, "--no-playlist", "--limit-rate", "2M"])
         .args([
             "--sleep-requests",
             "1",
@@ -197,12 +258,14 @@ fn fetch_audio(yt_dlp: &str, video_id: &str, dir: &Path, cookies: Option<&str>) 
         .args(["--extractor-retries", "1", "--abort-on-error"])
         // live en curso o recién terminado (aún procesándose): yt-dlp lo saltea, no baja infinito
         .args(["--match-filters", "!is_live & live_status != post_live"]);
-    if let Some(b) = cookies {
+    if let Some(b) = fb.cookies_from_browser.as_deref() {
         cmd.args(["--cookies-from-browser", b]);
     }
     let out = cmd
         .arg("-o")
-        .arg(dir.join("audio.%(ext)s"))
+        .arg(out)
+        // `--`: un ID que empieza con '-' no se lee como flag
+        .arg("--")
         .arg(format!("https://www.youtube.com/watch?v={video_id}"))
         .output()
         .with_context(|| format!("No se pudo ejecutar {yt_dlp}"))?;
@@ -220,7 +283,7 @@ fn fetch_audio(yt_dlp: &str, video_id: &str, dir: &Path, cookies: Option<&str>) 
     }
     let live =
         low.contains("live") || low.contains("premiere") || low.contains("does not pass filter");
-    if let Some(a) = find_audio(dir) {
+    if let Some(a) = find() {
         return Ok(a);
     }
     if live {
@@ -229,7 +292,7 @@ fn fetch_audio(yt_dlp: &str, video_id: &str, dir: &Path, cookies: Option<&str>) 
         );
     }
     anyhow::bail!(
-        "yt-dlp no dejó audio para {video_id} ({}): {}",
+        "yt-dlp no dejó el archivo para {video_id} ({}): {}",
         out.status,
         stderr.trim()
     )
@@ -260,177 +323,57 @@ fn run_asr(template: &str, audio: &Path, dest: &Path) -> Result<()> {
         std::fs::write(&part, &out.stdout)?;
     }
     let texto = std::fs::read_to_string(&part).unwrap_or_default();
+    // Servidores compatibles con OpenAI devuelven {"text": "..."} si no se pide response_format=text
+    let texto = serde_json::from_str::<serde_json::Value>(texto.trim())
+        .ok()
+        .and_then(|v| v["text"].as_str().map(String::from))
+        .unwrap_or(texto);
     if texto.trim().is_empty() {
         let _ = std::fs::remove_file(&part);
         anyhow::bail!("asr_command no produjo texto para {audio:?}");
     }
+    std::fs::write(&part, texto)?;
     std::fs::rename(&part, dest).with_context(|| format!("No se pudo mover {part:?} a {dest:?}"))
 }
 
-/// Download the actual video file
-fn download_actual_video(
-    yt_dlp_path: &str,
-    video_id: &str,
-    video_dir: &Path,
-    quality: &str,
-    _subtitle_langs: &[&str],
-) -> Option<PathBuf> {
-    // yaydl outputs mp4 by default if we don't specify only-audio
-    let output_template = video_dir.join(format!("{}.mp4", video_id));
-    let output_str = output_template.to_string_lossy().to_string();
-
-    log::info!("Downloading video using yaydl...");
-    let result = std::process::Command::new("yaydl")
-        .arg("-o")
-        .arg(&output_str)
-        .arg(format!("https://www.youtube.com/watch?v={}", video_id))
-        .output();
-
-    let try_fallback = match result {
-        Ok(output) if output.status.success() => {
-            log::info!("  ✅ yaydl download successful.");
-            false
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::warn!(
-                "  ⚠️ yaydl video download returned {}: {}",
-                output.status,
-                stderr.trim()
-            );
-            true
-        }
-        Err(e) => {
-            log::warn!("  ⚠️ Failed to run yaydl for video download: {}", e);
-            true
-        }
-    };
-
-    if try_fallback {
-        log::info!("  🔄 Running fallback strategy using yt-dlp...");
-
-        // Strategy 1: Try yt-dlp with Firefox cookies
-        log::info!("  Attempting yt-dlp with Firefox cookies...");
-        let res_firefox = std::process::Command::new(yt_dlp_path)
-            .arg("-f")
-            .arg(quality)
-            .arg("-o")
-            .arg(&output_str)
-            .arg("--cookies-from-browser")
-            .arg("firefox")
-            .arg(format!("https://www.youtube.com/watch?v={}", video_id))
-            .output();
-
-        let try_chrome = match res_firefox {
-            Ok(output) if output.status.success() => {
-                log::info!("  ✅ yt-dlp download with Firefox cookies successful.");
-                false
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                log::warn!(
-                    "  ⚠️ yt-dlp with Firefox cookies failed (status {}): {}",
-                    output.status,
-                    stderr.trim()
-                );
-                true
-            }
-            Err(e) => {
-                log::warn!("  ⚠️ Failed to execute yt-dlp: {}", e);
-                true
-            }
-        };
-
-        let try_no_cookies = if try_chrome {
-            // Strategy 2: Try yt-dlp with Chrome cookies
-            log::info!("  Attempting yt-dlp with Chrome cookies...");
-            let res_chrome = std::process::Command::new(yt_dlp_path)
-                .arg("-f")
-                .arg(quality)
-                .arg("-o")
-                .arg(&output_str)
-                .arg("--cookies-from-browser")
-                .arg("chrome")
-                .arg(format!("https://www.youtube.com/watch?v={}", video_id))
-                .output();
-
-            match res_chrome {
-                Ok(output) if output.status.success() => {
-                    log::info!("  ✅ yt-dlp download with Chrome cookies successful.");
-                    false
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    log::warn!(
-                        "  ⚠️ yt-dlp with Chrome cookies failed (status {}): {}",
-                        output.status,
-                        stderr.trim()
-                    );
-                    true
-                }
-                Err(e) => {
-                    log::warn!("  ⚠️ Failed to execute yt-dlp for Chrome: {}", e);
-                    true
-                }
-            }
-        } else {
-            false
-        };
-
-        if try_no_cookies {
-            // Strategy 3: Try yt-dlp without cookies
-            log::info!("  Attempting yt-dlp without cookies...");
-            let res_none = std::process::Command::new(yt_dlp_path)
-                .arg("-f")
-                .arg(quality)
-                .arg("-o")
-                .arg(&output_str)
-                .arg(format!("https://www.youtube.com/watch?v={}", video_id))
-                .output();
-
-            match res_none {
-                Ok(output) if output.status.success() => {
-                    log::info!("  ✅ yt-dlp download without cookies successful.");
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    log::error!(
-                        "  ❌ All download strategies failed. yt-dlp without cookies returned {}: {}",
-                        output.status,
-                        stderr.trim()
-                    );
-                    return None;
-                }
-                Err(e) => {
-                    log::error!(
-                        "  ❌ All download strategies failed. Failed to execute yt-dlp: {}",
-                        e
-                    );
-                    return None;
-                }
-            }
-        }
-    }
-
-    // Find the video file by scanning the directory (in case yaydl/yt-dlp changed extension)
-    let video_files: Option<Vec<PathBuf>> = std::fs::read_dir(video_dir).ok().map(|dir| {
-        dir.filter_map(|e| e.ok())
-            .filter(|e| {
-                if let Some(ext) = e.path().extension() {
-                    let ext_str = ext.to_string_lossy().to_lowercase();
+/// Video ya descargado (cualquier `*.mp4/webm/...` que no sea el audio de respaldo)
+fn find_video(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_stem().is_some_and(|s| s != "audio")
+                && p.extension().is_some_and(|e| {
                     matches!(
-                        ext_str.as_str(),
+                        e.to_string_lossy().to_lowercase().as_str(),
                         "mp4" | "webm" | "avi" | "mkv" | "mov" | "mpg" | "flv"
                     )
-                } else {
-                    false
-                }
-            })
-            .map(|e| e.path().clone())
-            .collect()
-    });
+                })
+        })
+}
 
-    video_files.and_then(|v| v.into_iter().next())
+/// Video completo (`--download-video`): reusa el archivo si ya está; si no, UN intento de yt-dlp
+/// con los mismos límites que el audio. Sin cascada de navegadores ni otros programas.
+fn download_actual_video(
+    yt_dlp: &str,
+    video_id: &str,
+    dir: &Path,
+    quality: &str,
+    fb: &AudioFallback,
+) -> Result<PathBuf> {
+    if let Some(v) = find_video(dir) {
+        log::info!("  📹 Video cache hit: {v:?}");
+        return Ok(v);
+    }
+    run_ytdlp(
+        yt_dlp,
+        video_id,
+        quality,
+        &dir.join("video.%(ext)s"),
+        fb,
+        || find_video(dir),
+    )
 }
 
 #[cfg(test)]
@@ -497,11 +440,19 @@ mod tests {
         )
     }
 
-    fn fb(asr: Option<&str>) -> AudioFallback {
+    fn fb(dir: &Path, asr: Option<&str>) -> AudioFallback {
         AudioFallback {
             cookies_from_browser: None,
             asr_command: asr.map(String::from),
+            max_downloads_per_day: 5,
+            counter_path: dir.join("downloads.json"),
         }
+    }
+
+    fn calls(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("calls"))
+            .map(|c| c.lines().count())
+            .unwrap_or(0)
     }
 
     #[test]
@@ -522,8 +473,14 @@ mod tests {
     fn respaldo_sin_asr_command_dice_que_configurar() {
         let dir = tmp_dir("fb-sinasr");
         let yt = fake_ytdlp_ok(&dir);
-        let e = transcribe_audio_fallback(&yt, "abc", &dir, &fb(None), &dir.join("transcript.txt"))
-            .unwrap_err();
+        let e = transcribe_audio_fallback(
+            &yt,
+            "abc",
+            &dir,
+            &fb(&dir, None),
+            &dir.join("transcript.txt"),
+        )
+        .unwrap_err();
         assert!(format!("{e}").contains("configurá asr_command"));
         assert!(
             !dir.join("calls").exists(),
@@ -536,7 +493,7 @@ mod tests {
         let dir = tmp_dir("fb-ok");
         let dest = dir.join("transcript.txt");
         let yt = fake_ytdlp_ok(&dir);
-        let mut f = fb(Some("cat {audio}"));
+        let mut f = fb(&dir, Some("cat {audio}"));
         f.cookies_from_browser = Some("firefox".into());
         transcribe_audio_fallback(&yt, "abc", &dir, &f, &dest).unwrap();
         assert_eq!(
@@ -574,7 +531,7 @@ mod tests {
             &yt,
             "abc",
             &dir,
-            &fb(Some("tr a-z A-Z < {audio} > {out}")),
+            &fb(&dir, Some("tr a-z A-Z < {audio} > {out}")),
             &dest,
         )
         .unwrap();
@@ -589,8 +546,12 @@ mod tests {
         let dir = tmp_dir("fb-asrmal");
         let dest = dir.join("transcript.txt");
         let yt = fake_ytdlp_ok(&dir);
-        assert!(transcribe_audio_fallback(&yt, "abc", &dir, &fb(Some("exit 3")), &dest).is_err());
-        assert!(transcribe_audio_fallback(&yt, "abc", &dir, &fb(Some("true")), &dest).is_err());
+        assert!(
+            transcribe_audio_fallback(&yt, "abc", &dir, &fb(&dir, Some("exit 3")), &dest).is_err()
+        );
+        assert!(
+            transcribe_audio_fallback(&yt, "abc", &dir, &fb(&dir, Some("true")), &dest).is_err()
+        );
         assert!(!dest.exists());
     }
 
@@ -606,7 +567,7 @@ mod tests {
             &yt,
             "abc",
             &dir,
-            &fb(Some("cat {audio}")),
+            &fb(&dir, Some("cat {audio}")),
             &dir.join("transcript.txt"),
         )
         .unwrap_err();
@@ -632,10 +593,93 @@ mod tests {
             &yt,
             "abc",
             &dir,
-            &fb(Some("cat {audio}")),
+            &fb(&dir, Some("cat {audio}")),
             &dir.join("transcript.txt"),
         )
         .unwrap_err();
         assert!(format!("{e}").contains("live"));
+    }
+
+    #[test]
+    fn video_hace_un_solo_intento_sin_cookies_automaticas_y_con_limites() {
+        let dir = tmp_dir("vid-ok");
+        // fake que escribe .mp4; lo que importa son los args y el conteo
+        let yt_video = fake(
+            &dir,
+            "yt-dlp-v",
+            "d=$(dirname \"$0\"); echo x >> \"$d/calls\"; printf '%s\\n' \"$@\" > \"$d/args\"\n\
+             while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=\"$2\"; shift; done\n\
+             printf 'video' > \"${out%.%(ext)s}.mp4\"",
+        );
+        let v = download_actual_video(&yt_video, "abc", &dir, "worst", &fb(&dir, None)).unwrap();
+        assert!(v.ends_with("video.mp4"));
+        assert_eq!(calls(&dir), 1);
+        let args = std::fs::read_to_string(dir.join("args")).unwrap();
+        for a in [
+            "--limit-rate",
+            "--sleep-requests",
+            "--abort-on-error",
+            "--match-filters",
+        ] {
+            assert!(args.contains(a), "falta {a}");
+        }
+        assert!(!args.contains("cookies"), "sin config no hay cookies");
+        // cache hit: no vuelve a llamar ni a contar
+        download_actual_video(&yt_video, "abc", &dir, "worst", &fb(&dir, None)).unwrap();
+        assert_eq!(calls(&dir), 1);
+        let c = std::fs::read_to_string(dir.join("downloads.json")).unwrap();
+        assert!(c.contains("\"count\":1"));
+    }
+
+    #[test]
+    fn video_con_429_corta_y_no_reintenta() {
+        let dir = tmp_dir("vid-429");
+        let yt = fake(
+            &dir,
+            "yt-dlp",
+            "echo x >> \"$(dirname \"$0\")/calls\"; echo 'Sign in to confirm you are not a bot' >&2; exit 1",
+        );
+        let e = download_actual_video(&yt, "abc", &dir, "worst", &fb(&dir, None)).unwrap_err();
+        assert!(format!("{e}").contains("baneo"));
+        assert_eq!(calls(&dir), 1);
+    }
+
+    #[test]
+    fn tope_diario_alcanzado_no_toca_ytdlp_ni_el_audio_cuenta_aparte() {
+        let dir = tmp_dir("tope");
+        let yt = fake_ytdlp_ok(&dir);
+        let mut f = fb(&dir, Some("cat {audio}"));
+        f.max_downloads_per_day = 1;
+        transcribe_audio_fallback(&yt, "abc", &dir, &f, &dir.join("transcript.txt")).unwrap();
+        // otro video: el tope (audio + video juntos) ya se gastó
+        let dir2 = dir.join("otro");
+        std::fs::create_dir_all(&dir2).unwrap();
+        let e = download_actual_video(&yt, "def", &dir2, "worst", &f).unwrap_err();
+        assert!(format!("{e}").contains("tope diario"));
+        assert_eq!(calls(&dir), 1);
+    }
+
+    #[test]
+    fn contador_se_reinicia_al_cambiar_el_dia() {
+        let dir = tmp_dir("contador");
+        let p = dir.join("downloads.json");
+        reserve_download(&p, 2, "2026-10-28").unwrap();
+        reserve_download(&p, 2, "2026-10-28").unwrap();
+        assert!(reserve_download(&p, 2, "2026-10-28").is_err());
+        reserve_download(&p, 2, "2026-10-29").unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"count\":1"));
+    }
+
+    #[test]
+    fn asr_json_con_text_se_extrae() {
+        let dir = tmp_dir("asr-json");
+        let dest = dir.join("transcript.txt");
+        run_asr(
+            "echo '{\"text\": \"hola mundo\"}'",
+            &dir.join("a.m4a"),
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "hola mundo");
     }
 }
