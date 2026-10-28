@@ -24,7 +24,9 @@ impl YoutubeClient {
         // If token_cache.json is empty (0 bytes), delete it to avoid parser EOF errors
         if let Ok(metadata) = std::fs::metadata("token_cache.json") {
             if metadata.len() == 0 {
-                log::warn!("token_cache.json is empty/corrupt. Deleting it to force re-authentication.");
+                log::warn!(
+                    "token_cache.json is empty/corrupt. Deleting it to force re-authentication."
+                );
                 let _ = std::fs::remove_file("token_cache.json");
             }
         }
@@ -48,11 +50,7 @@ impl YoutubeClient {
 
     async fn get_token(&self) -> Result<String> {
         let scopes = &["https://www.googleapis.com/auth/youtube"];
-        let token = self
-            .auth
-            .token(scopes)
-            .await
-            .context("OAuth failed")?;
+        let token = self.auth.token(scopes).await.context("OAuth failed")?;
         token
             .token()
             .map(|s| s.to_string())
@@ -110,14 +108,8 @@ impl YoutubeClient {
                             .as_str()
                             .unwrap_or("")
                             .to_string(),
-                        description: snippet["description"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string(),
-                        published_at: snippet["publishedAt"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string(),
+                        description: snippet["description"].as_str().unwrap_or("").to_string(),
+                        published_at: snippet["publishedAt"].as_str().unwrap_or("").to_string(),
                         duration_seconds: None,
                         view_count: None,
                         like_count: None,
@@ -162,7 +154,9 @@ impl YoutubeClient {
             );
         }
 
-        let items = resp["items"].as_array().context("No video items returned")?;
+        let items = resp["items"]
+            .as_array()
+            .context("No video items returned")?;
         if items.is_empty() {
             anyhow::bail!("Video not found on YouTube");
         }
@@ -173,10 +167,18 @@ impl YoutubeClient {
         let stats = &item["statistics"];
 
         let duration = content["duration"].as_str().unwrap_or("PT0S");
-        let view_count = stats["viewCount"].as_str().and_then(|s| s.parse::<u64>().ok());
-        let like_count = stats["likeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
-        let dislike_count = stats["dislikeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
-        let comment_count = stats["commentCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+        let view_count = stats["viewCount"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok());
+        let like_count = stats["likeCount"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok());
+        let dislike_count = stats["dislikeCount"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok());
+        let comment_count = stats["commentCount"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok());
         let published_at = snippet["publishedAt"].as_str().unwrap_or("").to_string();
 
         Ok(Video {
@@ -239,9 +241,8 @@ impl YoutubeClient {
     pub async fn remove_from_playlist(&self, playlist_item_id: &str) -> Result<()> {
         let token = self.get_token().await?;
 
-        let url = format!(
-            "https://www.googleapis.com/youtube/v3/playlistItems?id={playlist_item_id}"
-        );
+        let url =
+            format!("https://www.googleapis.com/youtube/v3/playlistItems?id={playlist_item_id}");
 
         let resp = self
             .client
@@ -286,10 +287,18 @@ impl YoutubeClient {
                         .as_str()
                         .unwrap_or("PT0S");
                     let stats = &item["statistics"];
-                    let view_count = stats["viewCount"].as_str().and_then(|s| s.parse::<u64>().ok());
-                    let like_count = stats["likeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
-                    let dislike_count = stats["dislikeCount"].as_str().and_then(|s| s.parse::<u64>().ok());
-                    let comment_count = stats["commentCount"].as_str().and_then(|s| s.parse::<u64>().ok());
+                    let view_count = stats["viewCount"]
+                        .as_str()
+                        .and_then(|s| s.parse::<u64>().ok());
+                    let like_count = stats["likeCount"]
+                        .as_str()
+                        .and_then(|s| s.parse::<u64>().ok());
+                    let dislike_count = stats["dislikeCount"]
+                        .as_str()
+                        .and_then(|s| s.parse::<u64>().ok());
+                    let comment_count = stats["commentCount"]
+                        .as_str()
+                        .and_then(|s| s.parse::<u64>().ok());
                     let published_at = item["snippet"]["publishedAt"].as_str();
 
                     if let Some(v) = chunk.iter_mut().find(|v| v.id == vid) {
@@ -317,10 +326,22 @@ fn parse_iso8601_duration(duration: &str) -> u64 {
         match c {
             'T' => t = true,
             '0'..='9' => n.push(c),
-            'H' if t => { s += n.parse::<u64>().unwrap_or(0) * 3600; n.clear(); }
-            'M' if t => { s += n.parse::<u64>().unwrap_or(0) * 60; n.clear(); }
-            'S' if t => { s += n.parse::<u64>().unwrap_or(0); n.clear(); }
-            'D' => { s += n.parse::<u64>().unwrap_or(0) * 86400; n.clear(); }
+            'H' if t => {
+                s += n.parse::<u64>().unwrap_or(0) * 3600;
+                n.clear();
+            }
+            'M' if t => {
+                s += n.parse::<u64>().unwrap_or(0) * 60;
+                n.clear();
+            }
+            'S' if t => {
+                s += n.parse::<u64>().unwrap_or(0);
+                n.clear();
+            }
+            'D' => {
+                s += n.parse::<u64>().unwrap_or(0) * 86400;
+                n.clear();
+            }
             'P' => n.clear(),
             _ => {}
         }

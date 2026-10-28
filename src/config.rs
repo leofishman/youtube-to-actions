@@ -106,8 +106,8 @@ impl Config {
     pub fn from_file(path: &PathBuf) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {:?}", path))?;
-        let mut cfg: Config = toml::from_str(&content)
-            .with_context(|| "Failed to parse config file")?;
+        let mut cfg: Config =
+            toml::from_str(&content).with_context(|| "Failed to parse config file")?;
 
         // Apply defaults
         cfg.output.sp_project_id = cfg.output.sp_project_id.or(Some("INBOX_PROJECT".into()));
@@ -121,8 +121,7 @@ impl Config {
         {
             let resolved = config_dir.join(creds);
             if resolved.exists() {
-                cfg.youtube.credentials_path =
-                    Some(resolved.to_string_lossy().to_string());
+                cfg.youtube.credentials_path = Some(resolved.to_string_lossy().to_string());
             }
         }
 
@@ -131,14 +130,10 @@ impl Config {
 
     /// Get resolved videos directory
     pub fn videos_dir(&self) -> Result<PathBuf> {
-        let dir = self
-            .storage
-            .videos_dir
-            .clone()
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                format!("{}/Videos/yt2action", home)
-            });
+        let dir = self.storage.videos_dir.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            format!("{}/Videos/yt2action", home)
+        });
         let path = PathBuf::from(dir);
         std::fs::create_dir_all(&path)
             .with_context(|| format!("Failed to create videos dir: {:?}", path))?;
@@ -155,10 +150,7 @@ impl Config {
 
     /// Get video quality
     pub fn video_quality(&self) -> &str {
-        self.storage
-            .quality
-            .as_deref()
-            .unwrap_or("worst")
+        self.storage.quality.as_deref().unwrap_or("worst")
     }
 
     /// Default config path: ~/.config/yt2action/config.toml

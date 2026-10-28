@@ -11,9 +11,9 @@ pub fn escape_yaml(s: &str) -> String {
         .replace('\n', " ")
         .replace('\r', "")
         // Unicode line separators that YAML parsers may interpret as newlines
-        .replace('\u{0085}', " ")   // NEL (Next Line)
-        .replace('\u{2028}', " ")   // Line Separator
-        .replace('\u{2029}', " ")   // Paragraph Separator
+        .replace('\u{0085}', " ") // NEL (Next Line)
+        .replace('\u{2028}', " ") // Line Separator
+        .replace('\u{2029}', " ") // Paragraph Separator
         // Neutralize YAML tag sequences (e.g. !!python/object:)
         .replace("!!", "! !")
 }
@@ -26,7 +26,7 @@ pub fn strip_html(s: &str) -> String {
     // Último '>': pasado ese punto ningún '<' cierra, así no se re-escanea hasta el final
     let last_gt = chars.iter().rposition(|&c| c == '>');
     let mut i = 0;
-    
+
     while i < chars.len() {
         if chars[i] == '<' {
             let mut is_tag = false;
@@ -99,7 +99,11 @@ pub fn escape_xml_content(s: &str) -> String {
 
 /// Helper to wrap content in XML tags, automatically escaping the content.
 pub fn wrap_in_xml(tag: &str, content: &str) -> String {
-    format!("<{tag}>{escaped}</{tag}>", tag = tag, escaped = escape_xml_content(content))
+    format!(
+        "<{tag}>{escaped}</{tag}>",
+        tag = tag,
+        escaped = escape_xml_content(content)
+    )
 }
 
 #[cfg(test)]
@@ -123,7 +127,10 @@ mod tests {
 
     #[test]
     fn test_escape_yaml_neutralizes_tags() {
-        assert_eq!(escape_yaml("!!python/object:os.system"), "! !python/object:os.system");
+        assert_eq!(
+            escape_yaml("!!python/object:os.system"),
+            "! !python/object:os.system"
+        );
     }
 
     #[test]
@@ -137,7 +144,10 @@ mod tests {
             "This is bold text and an iframe."
         );
         // Ensure literal mathematical '<' is preserved
-        assert_eq!(strip_html("if count < 5 || x > 10"), "if count < 5 || x > 10");
+        assert_eq!(
+            strip_html("if count < 5 || x > 10"),
+            "if count < 5 || x > 10"
+        );
         // Ensure invalid tags or unclosed tags are handled safely
         assert_eq!(strip_html("Hello < unclosed tag"), "Hello < unclosed tag");
     }
@@ -169,7 +179,9 @@ mod tests {
     #[test]
     fn test_sanitize_for_obsidian_neutralizes_uri_scheme() {
         assert_eq!(
-            sanitize_for_obsidian("[click](obsidian://run-plugin?id=shell-commands&command=whoami)"),
+            sanitize_for_obsidian(
+                "[click](obsidian://run-plugin?id=shell-commands&command=whoami)"
+            ),
             "[click](obsidian[:]//run-plugin?id=shell-commands&command=whoami)"
         );
     }

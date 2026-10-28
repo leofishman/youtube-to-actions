@@ -97,10 +97,7 @@ impl SpClient {
             .context("Failed to parse SP response")?;
 
         if resp["ok"].as_bool().unwrap_or(false) {
-            Ok(resp["data"]["id"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string())
+            Ok(resp["data"]["id"].as_str().unwrap_or("unknown").to_string())
         } else {
             let msg = resp["error"]["message"].as_str().unwrap_or("unknown");
             if resp["error"]["code"].as_str() == Some("UNAUTHORIZED") {
@@ -137,10 +134,7 @@ impl SpClient {
             .context("Failed to parse SP projects response")?;
 
         if resp["ok"].as_bool().unwrap_or(false) {
-            let data = resp["data"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let data = resp["data"].as_array().cloned().unwrap_or_default();
             Ok(data)
         } else {
             let msg = resp["error"]["message"].as_str().unwrap_or("unknown");
@@ -161,7 +155,7 @@ impl SpClient {
             }
         };
         let search_title = title.to_lowercase();
-        
+
         // 1. Try case-insensitive title match
         for p in &projects {
             if let Some(t) = p["title"].as_str() {
@@ -172,7 +166,7 @@ impl SpClient {
                 }
             }
         }
-        
+
         // 2. Try direct ID match
         for p in &projects {
             if let Some(id) = p["id"].as_str() {
@@ -185,7 +179,6 @@ impl SpClient {
         Ok(None)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -215,7 +208,15 @@ mod tests {
     fn token_paths_cover_flatpak_and_native() {
         let paths = token_paths();
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].to_string_lossy().contains(".var/app/com.super_productivity"));
-        assert!(paths[1].to_string_lossy().ends_with(".config/superProductivity/local-rest-api-token"));
+        assert!(
+            paths[0]
+                .to_string_lossy()
+                .contains(".var/app/com.super_productivity")
+        );
+        assert!(
+            paths[1]
+                .to_string_lossy()
+                .ends_with(".config/superProductivity/local-rest-api-token")
+        );
     }
 }

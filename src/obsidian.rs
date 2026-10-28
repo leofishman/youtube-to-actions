@@ -52,7 +52,8 @@ pub fn create_note(
     // Escape variables for YAML frontmatter
     let escaped_title = crate::security::escape_yaml(&processed.video.title);
     let escaped_channel = crate::security::escape_yaml(&processed.video.channel);
-    let escaped_category = crate::security::escape_yaml(&format!("{:?}", processed.classification.category));
+    let escaped_category =
+        crate::security::escape_yaml(&format!("{:?}", processed.classification.category));
     let escaped_tags = processed
         .classification
         .tags
@@ -165,12 +166,14 @@ comments: {comments}
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let own = format!("url: https://youtube.com/watch?v={}\n", processed.video.id);
         if !existing.contains(&own) {
-            anyhow::bail!("Ya existe {:?} y no es la nota de este video: no se sobrescribe", path);
+            anyhow::bail!(
+                "Ya existe {:?} y no es la nota de este video: no se sobrescribe",
+                path
+            );
         }
     }
 
-    std::fs::write(&path, &content)
-        .with_context(|| format!("Failed to write note: {:?}", path))?;
+    std::fs::write(&path, &content).with_context(|| format!("Failed to write note: {:?}", path))?;
 
     log::info!("Created Obsidian note: {:?}", path);
     Ok(path)
@@ -179,10 +182,14 @@ comments: {comments}
 /// La nota de este video en `dir`, si ya existe (la identifica su línea `url:`).
 fn find_note_of_video(dir: &Path, id: &str) -> Option<std::path::PathBuf> {
     let own = format!("url: https://youtube.com/watch?v={id}\n");
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
-        p.extension().is_some_and(|x| x == "md")
-            && std::fs::read_to_string(p).is_ok_and(|c| c.contains(&own))
-    })
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension().is_some_and(|x| x == "md")
+                && std::fs::read_to_string(p).is_ok_and(|c| c.contains(&own))
+        })
 }
 
 /// `<slug>-<id>.md`: el ID evita que dos títulos con el mismo slug se pisen y que un
@@ -197,7 +204,14 @@ fn note_filename(title: &str, id: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    format!("{}.md", if name.is_empty() { "sin-titulo".into() } else { name })
+    format!(
+        "{}.md",
+        if name.is_empty() {
+            "sin-titulo".into()
+        } else {
+            name
+        }
+    )
 }
 
 fn slugify(title: &str) -> String {
@@ -225,8 +239,20 @@ mod tests {
     #[test]
     fn titulos_distintos_no_se_pisan() {
         let vault = tmp_dir("slugs");
-        let a = create_note(&vault, &processed_video("idA", "Rust Tutorial!"), None, false).unwrap();
-        let b = create_note(&vault, &processed_video("idB", "rust tutorial?"), None, false).unwrap();
+        let a = create_note(
+            &vault,
+            &processed_video("idA", "Rust Tutorial!"),
+            None,
+            false,
+        )
+        .unwrap();
+        let b = create_note(
+            &vault,
+            &processed_video("idB", "rust tutorial?"),
+            None,
+            false,
+        )
+        .unwrap();
         assert_ne!(a, b);
         assert!(std::fs::read_to_string(&a).unwrap().contains("watch?v=idA"));
         assert!(std::fs::read_to_string(&b).unwrap().contains("watch?v=idB"));
@@ -251,7 +277,10 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "nota escrita a mano").unwrap();
         assert!(create_note(&vault, &v, None, false).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "nota escrita a mano");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "nota escrita a mano"
+        );
 
         // la nota del mismo video sí se reescribe (reproceso con --force)
         std::fs::remove_file(&path).unwrap();

@@ -141,7 +141,11 @@ fn download_actual_video(
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            log::warn!("  ⚠️ yaydl video download returned {}: {}", output.status, stderr.trim());
+            log::warn!(
+                "  ⚠️ yaydl video download returned {}: {}",
+                output.status,
+                stderr.trim()
+            );
             true
         }
         Err(e) => {
@@ -152,7 +156,7 @@ fn download_actual_video(
 
     if try_fallback {
         log::info!("  🔄 Running fallback strategy using yt-dlp...");
-        
+
         // Strategy 1: Try yt-dlp with Firefox cookies
         log::info!("  Attempting yt-dlp with Firefox cookies...");
         let res_firefox = std::process::Command::new(yt_dlp_path)
@@ -172,7 +176,11 @@ fn download_actual_video(
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                log::warn!("  ⚠️ yt-dlp with Firefox cookies failed (status {}): {}", output.status, stderr.trim());
+                log::warn!(
+                    "  ⚠️ yt-dlp with Firefox cookies failed (status {}): {}",
+                    output.status,
+                    stderr.trim()
+                );
                 true
             }
             Err(e) => {
@@ -201,7 +209,11 @@ fn download_actual_video(
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    log::warn!("  ⚠️ yt-dlp with Chrome cookies failed (status {}): {}", output.status, stderr.trim());
+                    log::warn!(
+                        "  ⚠️ yt-dlp with Chrome cookies failed (status {}): {}",
+                        output.status,
+                        stderr.trim()
+                    );
                     true
                 }
                 Err(e) => {
@@ -230,11 +242,18 @@ fn download_actual_video(
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    log::error!("  ❌ All download strategies failed. yt-dlp without cookies returned {}: {}", output.status, stderr.trim());
+                    log::error!(
+                        "  ❌ All download strategies failed. yt-dlp without cookies returned {}: {}",
+                        output.status,
+                        stderr.trim()
+                    );
                     return None;
                 }
                 Err(e) => {
-                    log::error!("  ❌ All download strategies failed. Failed to execute yt-dlp: {}", e);
+                    log::error!(
+                        "  ❌ All download strategies failed. Failed to execute yt-dlp: {}",
+                        e
+                    );
                     return None;
                 }
             }
@@ -242,21 +261,22 @@ fn download_actual_video(
     }
 
     // Find the video file by scanning the directory (in case yaydl/yt-dlp changed extension)
-    let video_files: Option<Vec<PathBuf>> = std::fs::read_dir(video_dir)
-        .ok()
-        .map(|dir| {
-            dir.filter_map(|e| e.ok())
-                .filter(|e| {
-                    if let Some(ext) = e.path().extension() {
-                        let ext_str = ext.to_string_lossy().to_lowercase();
-                        matches!(ext_str.as_str(), "mp4" | "webm" | "avi" | "mkv" | "mov" | "mpg" | "flv")
-                    } else {
-                        false
-                    }
-                })
-                .map(|e| e.path().clone())
-                .collect()
-        });
+    let video_files: Option<Vec<PathBuf>> = std::fs::read_dir(video_dir).ok().map(|dir| {
+        dir.filter_map(|e| e.ok())
+            .filter(|e| {
+                if let Some(ext) = e.path().extension() {
+                    let ext_str = ext.to_string_lossy().to_lowercase();
+                    matches!(
+                        ext_str.as_str(),
+                        "mp4" | "webm" | "avi" | "mkv" | "mov" | "mpg" | "flv"
+                    )
+                } else {
+                    false
+                }
+            })
+            .map(|e| e.path().clone())
+            .collect()
+    });
 
     video_files.and_then(|v| v.into_iter().next())
 }

@@ -7,12 +7,12 @@ mod sp_api;
 mod types;
 mod youtube;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::path::PathBuf;
 use types::ProcessResult;
 use youtube::YoutubeClient;
-use anyhow::Context;
 
 #[derive(Parser)]
 #[command(name = "yt2action", about = "YouTube playlist → tasks/notes automator")]
@@ -147,8 +147,25 @@ async fn main() -> anyhow::Result<()> {
         Commands::List { config } => cmd_list(config).await,
         Commands::Auth { credentials } => cmd_auth(credentials).await,
         Commands::Health => cmd_health().await,
-        Commands::Process { video, config, patterns, download_video, dry_run, stdout, force } => {
-            cmd_process(video, config, patterns, download_video, dry_run, stdout, force).await
+        Commands::Process {
+            video,
+            config,
+            patterns,
+            download_video,
+            dry_run,
+            stdout,
+            force,
+        } => {
+            cmd_process(
+                video,
+                config,
+                patterns,
+                download_video,
+                dry_run,
+                stdout,
+                force,
+            )
+            .await
         }
         Commands::SyncPatterns { force } => cmd_sync_patterns(force).await,
         Commands::State { subcommand } => cmd_state(subcommand).await,
@@ -199,20 +216,20 @@ async fn cmd_run(
     // Collect playlists to process with their SP settings and overrides
     let playlists_to_process: Vec<_> = {
         let mut playlists = Vec::new();
-        
+
         // Add legacy default playlist if no other playlists are configured
         if cfg.youtube.playlists.is_empty() {
             playlists.push((
                 cfg.youtube.playlist_id.clone(),
                 vec![],
-                None, // sp_enabled - use global
+                None,                             // sp_enabled - use global
                 cfg.output.sp_project_id.clone(), // sp_project_id - use global
-                None, // obsidian_folder - use default
-                None, // obsidian_vault - use default
-                None, // max_transcript_chars - use global
+                None,                             // obsidian_folder - use default
+                None,                             // obsidian_vault - use default
+                None,                             // max_transcript_chars - use global
             ));
         }
-        
+
         // Add configured playlists
         for p in &cfg.youtube.playlists {
             playlists.push((
@@ -225,7 +242,7 @@ async fn cmd_run(
                 p.max_transcript_chars,
             ));
         }
-        
+
         playlists
     };
 
@@ -239,13 +256,22 @@ async fn cmd_run(
 
     // Process each playlist
     let mut total_processed = 0;
-    for (playlist_id, playlist_patterns, playlist_sp_enabled, playlist_project_id, playlist_obsidian_folder, playlist_obsidian_vault, playlist_max_transcript_chars) in playlists_to_process {
+    for (
+        playlist_id,
+        playlist_patterns,
+        playlist_sp_enabled,
+        playlist_project_id,
+        playlist_obsidian_folder,
+        playlist_obsidian_vault,
+        playlist_max_transcript_chars,
+    ) in playlists_to_process
+    {
         if total_processed >= limit {
             break;
         }
 
         log::info!("Processing playlist: {}", playlist_id);
-        
+
         // Fetch videos for this playlist
         let videos = match yt.get_playlist_videos(&playlist_id).await {
             Ok(v) => v,
@@ -278,235 +304,253 @@ async fn cmd_run(
             playlist_id
         );
 
-    // Build valid folder list for the AI
-    let mut valid_folders = vec![
-        "Learn".into(),
-        "Ideas".into(),
-        "Resources".into(),
-        "Health".into(),
-        "Things".into(),
-        "Resources/YouTube".into(),
-    ];
-    for folder in cfg.output.category_folders.values() {
-        if !valid_folders.contains(folder) {
-            valid_folders.push(folder.clone());
-        }
-    }
-
-    let proc = processor::Processor::new(
-        cfg.processing
-            .llm_base_url
-            .as_deref()
-            .context("llm_base_url not set in config")?,
-        cfg.processing
-            .llm_model
-            .as_deref()
-            .context("llm_model not set in config")?,
-        cfg.processing
-            .llm_api_key
-            .as_deref()
-            .unwrap_or(""),
-        valid_folders,
-        playlist_max_transcript_chars.or(cfg.processing.max_transcript_chars),
-    );
-
-    // Resolve yt-dlp path and storage config
-    let yt_dlp_path = cfg.yt_dlp_path();
-    let videos_dir = cfg.videos_dir()?;
-    let quality = cfg.video_quality().to_string();
-    let subtitle_langs: Vec<&str> = cfg
-        .storage
-        .subtitle_langs
-        .as_deref()
-        .unwrap_or("en,es,es-419,en-US")
-        .split(',')
-        .map(|s| s.trim())
-        .collect();
-
-
-
-    for video in &to_process {
-        log::info!("Processing: {}", video.title);
-
-        // Step 1: Download video + subtitles locally via yt-dlp
-        if download_video_flag {
-            log::info!("  📥 Downloading video {}...", video.id);
-        } else {
-            log::info!("  📥 Fetching transcript for {}...", video.id);
-        }
-        let transcript_result = match downloader::download_video(
-            &yt_dlp_path,
-            &video.id,
-            &videos_dir,
-            &quality,
-            &subtitle_langs,
-            download_video_flag,
-        )
-        .await
-        {
-            Ok(t) => t,
-            // Un video que falla no corta los demás (auditoría #6)
-            Err(e) => {
-                log::error!("  ❌ Failed to fetch transcript for '{}': {e:#}", video.title);
-                results.push(error_result(video, &e));
-                continue;
+        // Build valid folder list for the AI
+        let mut valid_folders = vec![
+            "Learn".into(),
+            "Ideas".into(),
+            "Resources".into(),
+            "Health".into(),
+            "Things".into(),
+            "Resources/YouTube".into(),
+        ];
+        for folder in cfg.output.category_folders.values() {
+            if !valid_folders.contains(folder) {
+                valid_folders.push(folder.clone());
             }
-        };
+        }
 
-        // Step 2: AI processing
-        match proc.process(video, transcript_result.transcript.as_deref()).await {
-            Ok(mut processed) => {
-                // Set local video path
-                processed.local_video_path = transcript_result
-                    .video_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string());
+        let proc = processor::Processor::new(
+            cfg.processing
+                .llm_base_url
+                .as_deref()
+                .context("llm_base_url not set in config")?,
+            cfg.processing
+                .llm_model
+                .as_deref()
+                .context("llm_model not set in config")?,
+            cfg.processing.llm_api_key.as_deref().unwrap_or(""),
+            valid_folders,
+            playlist_max_transcript_chars.or(cfg.processing.max_transcript_chars),
+        );
 
-                // If Fabric patterns are specified, run the second phase
-                let patterns_to_run = if !patterns.is_empty() {
-                    patterns.clone()
-                } else {
-                    playlist_patterns.clone()
-                };
+        // Resolve yt-dlp path and storage config
+        let yt_dlp_path = cfg.yt_dlp_path();
+        let videos_dir = cfg.videos_dir()?;
+        let quality = cfg.video_quality().to_string();
+        let subtitle_langs: Vec<&str> = cfg
+            .storage
+            .subtitle_langs
+            .as_deref()
+            .unwrap_or("en,es,es-419,en-US")
+            .split(',')
+            .map(|s| s.trim())
+            .collect();
 
-                let (pattern_execution_times, pattern_errors) = run_patterns(
-                    &proc,
-                    &mut processed,
-                    &patterns_to_run,
-                    &fabric_patterns_dir(),
-                    true,
-                )
-                .await;
-                let mut result = ProcessResult {
-                    video_title: video.title.clone(),
-                    video_url: format!("https://youtube.com/watch?v={}", video.id),
-                    target_folder: processed.target_folder.clone(),
-                    note_path: None,
-                    sp_task_id: None,
-                    moved_to_processed: false,
-                    suggested_action: processed.classification.suggested_action.clone(),
-                    tags: processed.classification.tags.clone(),
-                    error: None,
-                    pattern_execution_times,
-                    pattern_errors,
-                };
+        for video in &to_process {
+            log::info!("Processing: {}", video.title);
 
-                // Nota en Obsidian (salida principal), marca en el estado y mover de
-                // playlist. Si la nota falla, el video queda como error: sin tarea, sin
-                // mover y sin marcar.
-                let active_vault = playlist_obsidian_vault
-                    .as_ref()
-                    .or(cfg.output.obsidian_vault.as_ref())
-                    .map(PathBuf::from);
-                // Mover a la playlist de procesados, si hay una configurada
-                let move_video = async || -> anyhow::Result<bool> {
-                    let Some(processed_pl) = cfg.youtube.processed_playlist_id.as_ref() else {
-                        return Ok(false);
-                    };
-                    if dry_run {
-                        log::info!("  ✅ [Simulado] Video would be moved to processed playlist: {processed_pl}");
-                        return Ok(true);
-                    }
-                    yt.add_to_playlist(processed_pl, &video.id)
-                        .await
-                        .context("Could not add to processed playlist")?;
-                    yt.remove_from_playlist(&video.playlist_item_id)
-                        .await
-                        .context("Added to processed playlist but could not remove from source")?;
-                    log::info!("  ✅ Moved to processed playlist: {processed_pl}");
-                    Ok(true)
-                };
-                match finish_video(
-                    active_vault.as_deref(),
-                    &processed,
-                    playlist_obsidian_folder.as_deref(),
-                    dry_run,
-                    &mut state,
-                    &state_path,
-                    move_video,
-                )
-                .await
-                {
-                    Ok((path, moved)) => {
-                        result.note_path = path.map(|p| p.to_string_lossy().to_string());
-                        result.moved_to_processed = moved;
-                    }
-                    Err(e) => {
-                        log::error!("  ❌ Nota o estado fallaron, el video no queda procesado: {e:#}");
-                        result.error = Some(format!("{e:#}"));
-                        results.push(result);
-                        continue;
-                    }
-                }
-
-                // Create SP task (optional)
-                let sp_enabled = playlist_sp_enabled.unwrap_or(cfg.output.sp_enabled);
-                let project_id_raw = playlist_project_id
-                    .clone()
-                    .or_else(|| cfg.output.sp_project_id.clone())
-                    .unwrap_or_else(|| "INBOX_PROJECT".to_string());
-                
-                if sp_enabled {
-                    let resolved_id = match sp.resolve_project_id(&project_id_raw).await {
-                        Ok(Some(id)) => {
-                            log::debug!("Resolved SP project '{}' to ID: {}", project_id_raw, id);
-                            id
-                        }
-                        _ => {
-                            log::debug!("Could not resolve SP project '{}', using raw value", project_id_raw);
-                            project_id_raw
-                        }
-                    };
-
-                    let title = format!("[📺] {}", security::strip_html(&processed.video.title));
-                    let notes = format!(
-                        "{}\n\n## Puntos clave\n{}\n\n🔗 https://youtube.com/watch?v={}",
-                        security::strip_html(&processed.summary),
-                        processed
-                            .key_points
-                            .iter()
-                            .map(|p| format!("- {}", security::strip_html(p)))
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        processed.video.id
+            // Step 1: Download video + subtitles locally via yt-dlp
+            if download_video_flag {
+                log::info!("  📥 Downloading video {}...", video.id);
+            } else {
+                log::info!("  📥 Fetching transcript for {}...", video.id);
+            }
+            let transcript_result = match downloader::download_video(
+                &yt_dlp_path,
+                &video.id,
+                &videos_dir,
+                &quality,
+                &subtitle_langs,
+                download_video_flag,
+            )
+            .await
+            {
+                Ok(t) => t,
+                // Un video que falla no corta los demás (auditoría #6)
+                Err(e) => {
+                    log::error!(
+                        "  ❌ Failed to fetch transcript for '{}': {e:#}",
+                        video.title
                     );
+                    results.push(error_result(video, &e));
+                    continue;
+                }
+            };
 
-                    let task = types::SpTask {
-                        title,
-                        notes,
-                        project_id: resolved_id,
-                        tag_ids: processed.classification.tags.clone(),
+            // Step 2: AI processing
+            match proc
+                .process(video, transcript_result.transcript.as_deref())
+                .await
+            {
+                Ok(mut processed) => {
+                    // Set local video path
+                    processed.local_video_path = transcript_result
+                        .video_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string());
+
+                    // If Fabric patterns are specified, run the second phase
+                    let patterns_to_run = if !patterns.is_empty() {
+                        patterns.clone()
+                    } else {
+                        playlist_patterns.clone()
                     };
 
-                    if dry_run {
-                        log::info!("  ✅ [Simulado] SP task would be created: {}", task.title);
-                        result.sp_task_id = Some("SIMULATED_TASK_ID".to_string());
-                    } else {
-                        match sp.create_task(&task).await {
-                            Ok(id) => {
-                                result.sp_task_id = Some(id.clone());
-                                log::info!("  ✅ Task created: {id}");
-                            }
-                            Err(e) => log::error!("  ❌ Failed to create task: {e}"),
+                    let (pattern_execution_times, pattern_errors) = run_patterns(
+                        &proc,
+                        &mut processed,
+                        &patterns_to_run,
+                        &fabric_patterns_dir(),
+                        true,
+                    )
+                    .await;
+                    let mut result = ProcessResult {
+                        video_title: video.title.clone(),
+                        video_url: format!("https://youtube.com/watch?v={}", video.id),
+                        target_folder: processed.target_folder.clone(),
+                        note_path: None,
+                        sp_task_id: None,
+                        moved_to_processed: false,
+                        suggested_action: processed.classification.suggested_action.clone(),
+                        tags: processed.classification.tags.clone(),
+                        error: None,
+                        pattern_execution_times,
+                        pattern_errors,
+                    };
+
+                    // Nota en Obsidian (salida principal), marca en el estado y mover de
+                    // playlist. Si la nota falla, el video queda como error: sin tarea, sin
+                    // mover y sin marcar.
+                    let active_vault = playlist_obsidian_vault
+                        .as_ref()
+                        .or(cfg.output.obsidian_vault.as_ref())
+                        .map(PathBuf::from);
+                    // Mover a la playlist de procesados, si hay una configurada
+                    let move_video = async || -> anyhow::Result<bool> {
+                        let Some(processed_pl) = cfg.youtube.processed_playlist_id.as_ref() else {
+                            return Ok(false);
+                        };
+                        if dry_run {
+                            log::info!(
+                                "  ✅ [Simulado] Video would be moved to processed playlist: {processed_pl}"
+                            );
+                            return Ok(true);
+                        }
+                        yt.add_to_playlist(processed_pl, &video.id)
+                            .await
+                            .context("Could not add to processed playlist")?;
+                        yt.remove_from_playlist(&video.playlist_item_id)
+                            .await
+                            .context(
+                                "Added to processed playlist but could not remove from source",
+                            )?;
+                        log::info!("  ✅ Moved to processed playlist: {processed_pl}");
+                        Ok(true)
+                    };
+                    match finish_video(
+                        active_vault.as_deref(),
+                        &processed,
+                        playlist_obsidian_folder.as_deref(),
+                        dry_run,
+                        &mut state,
+                        &state_path,
+                        move_video,
+                    )
+                    .await
+                    {
+                        Ok((path, moved)) => {
+                            result.note_path = path.map(|p| p.to_string_lossy().to_string());
+                            result.moved_to_processed = moved;
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "  ❌ Nota o estado fallaron, el video no queda procesado: {e:#}"
+                            );
+                            result.error = Some(format!("{e:#}"));
+                            results.push(result);
+                            continue;
                         }
                     }
-                }
 
-                results.push(result);
-            }
-            Err(e) => {
-                log::error!("  ❌ Failed to process '{}': {e}", video.title);
-                results.push(error_result(video, &e));
+                    // Create SP task (optional)
+                    let sp_enabled = playlist_sp_enabled.unwrap_or(cfg.output.sp_enabled);
+                    let project_id_raw = playlist_project_id
+                        .clone()
+                        .or_else(|| cfg.output.sp_project_id.clone())
+                        .unwrap_or_else(|| "INBOX_PROJECT".to_string());
+
+                    if sp_enabled {
+                        let resolved_id = match sp.resolve_project_id(&project_id_raw).await {
+                            Ok(Some(id)) => {
+                                log::debug!(
+                                    "Resolved SP project '{}' to ID: {}",
+                                    project_id_raw,
+                                    id
+                                );
+                                id
+                            }
+                            _ => {
+                                log::debug!(
+                                    "Could not resolve SP project '{}', using raw value",
+                                    project_id_raw
+                                );
+                                project_id_raw
+                            }
+                        };
+
+                        let title =
+                            format!("[📺] {}", security::strip_html(&processed.video.title));
+                        let notes = format!(
+                            "{}\n\n## Puntos clave\n{}\n\n🔗 https://youtube.com/watch?v={}",
+                            security::strip_html(&processed.summary),
+                            processed
+                                .key_points
+                                .iter()
+                                .map(|p| format!("- {}", security::strip_html(p)))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            processed.video.id
+                        );
+
+                        let task = types::SpTask {
+                            title,
+                            notes,
+                            project_id: resolved_id,
+                            tag_ids: processed.classification.tags.clone(),
+                        };
+
+                        if dry_run {
+                            log::info!("  ✅ [Simulado] SP task would be created: {}", task.title);
+                            result.sp_task_id = Some("SIMULATED_TASK_ID".to_string());
+                        } else {
+                            match sp.create_task(&task).await {
+                                Ok(id) => {
+                                    result.sp_task_id = Some(id.clone());
+                                    log::info!("  ✅ Task created: {id}");
+                                }
+                                Err(e) => log::error!("  ❌ Failed to create task: {e}"),
+                            }
+                        }
+                    }
+
+                    results.push(result);
+                }
+                Err(e) => {
+                    log::error!("  ❌ Failed to process '{}': {e}", video.title);
+                    results.push(error_result(video, &e));
+                }
             }
         }
-    }
 
         total_processed += to_process.len();
     }
 
     // El estado ya se guardó después de cada video (record_note)
     if dry_run {
-        log::info!("💾 [Simulado] State changes would be saved to {:?}", state_path);
+        log::info!(
+            "💾 [Simulado] State changes would be saved to {:?}",
+            state_path
+        );
     }
 
     // --- FINAL REPORT ---
@@ -532,7 +576,12 @@ fn error_result(video: &types::Video, e: &anyhow::Error) -> ProcessResult {
 }
 
 /// Print a beautiful summary report after processing
-fn print_report(results: &[ProcessResult], cfg: &Config, total_duration: std::time::Duration, dry_run: bool) {
+fn print_report(
+    results: &[ProcessResult],
+    cfg: &Config,
+    total_duration: std::time::Duration,
+    dry_run: bool,
+) {
     let _total = results.len();
     let errors: Vec<_> = results.iter().filter(|r| r.error.is_some()).collect();
     let success: Vec<_> = results.iter().filter(|r| r.error.is_none()).collect();
@@ -622,18 +671,10 @@ fn print_report(results: &[ProcessResult], cfg: &Config, total_duration: std::ti
 
 fn action_emoji(action: &types::SuggestedAction) -> Option<&'static str> {
     match action {
-        types::SuggestedAction::WatchFull => {
-            Some("👀  Sugerencia: Ver completo (vale la pena)")
-        }
-        types::SuggestedAction::ReadTranscript => {
-            Some("📖  Sugerencia: Solo leer resumen")
-        }
-        types::SuggestedAction::SaveForLater => {
-            Some("💾  Sugerencia: Guardar para después")
-        }
-        types::SuggestedAction::Archive => {
-            Some("📦  Sugerencia: Archivar (referencia)")
-        }
+        types::SuggestedAction::WatchFull => Some("👀  Sugerencia: Ver completo (vale la pena)"),
+        types::SuggestedAction::ReadTranscript => Some("📖  Sugerencia: Solo leer resumen"),
+        types::SuggestedAction::SaveForLater => Some("💾  Sugerencia: Guardar para después"),
+        types::SuggestedAction::Archive => Some("📦  Sugerencia: Archivar (referencia)"),
     }
 }
 
@@ -887,7 +928,10 @@ async fn cmd_process(
         let yt = YoutubeClient::authenticate(&creds_path).await?;
         log::info!("YouTube: authenticated.");
 
-        log::info!("Fetching playlist {} to resolve position...", cfg.youtube.playlist_id);
+        log::info!(
+            "Fetching playlist {} to resolve position...",
+            cfg.youtube.playlist_id
+        );
         let playlist_videos = yt.get_playlist_videos(&cfg.youtube.playlist_id).await?;
         if pos > 0 && pos <= playlist_videos.len() {
             playlist_videos[pos - 1].clone()
@@ -899,7 +943,10 @@ async fn cmd_process(
             );
         }
     } else {
-        log::info!("Fetching public video details via yt-dlp for ID: {}...", resolved_id);
+        log::info!(
+            "Fetching public video details via yt-dlp for ID: {}...",
+            resolved_id
+        );
         get_video_metadata_ytdlp(&cfg.yt_dlp_path(), &resolved_id)?
     };
 
@@ -916,11 +963,18 @@ async fn cmd_process(
     // Load state
     let state_path = get_state_path()?;
     // --stdout no toca el estado: no lo lee (un state.json corrupto no lo bloquea)
-    let mut state = if to_stdout { types::ProcessState::new() } else { load_state(&state_path)? };
+    let mut state = if to_stdout {
+        types::ProcessState::new()
+    } else {
+        load_state(&state_path)?
+    };
 
     // Igual que `run`: lo ya procesado se saltea salvo con --force (la simulación y --stdout no tocan el estado)
     if !force && !to_stdout && !dry_run && state.is_processed(&video.id) {
-        println!("  ⏭️  Ya procesado: {}. Usá --force para reprocesarlo.", video.id);
+        println!(
+            "  ⏭️  Ya procesado: {}. Usá --force para reprocesarlo.",
+            video.id
+        );
         return Ok(());
     }
 
@@ -948,10 +1002,7 @@ async fn cmd_process(
             .llm_model
             .as_deref()
             .context("llm_model not set in config")?,
-        cfg.processing
-            .llm_api_key
-            .as_deref()
-            .unwrap_or(""),
+        cfg.processing.llm_api_key.as_deref().unwrap_or(""),
         valid_folders,
         cfg.processing.max_transcript_chars,
     );
@@ -994,18 +1045,27 @@ async fn cmd_process(
     }
     let transcript_result = transcript_result?;
 
-  // AI processing
-        match proc.process(&video, transcript_result.transcript.as_deref()).await {
-            Ok(mut processed) => {
-                // Set local video path
-                processed.local_video_path = transcript_result
-                    .video_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string());
+    // AI processing
+    match proc
+        .process(&video, transcript_result.transcript.as_deref())
+        .await
+    {
+        Ok(mut processed) => {
+            // Set local video path
+            processed.local_video_path = transcript_result
+                .video_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
 
             // If Fabric patterns are specified, run the second phase
-            let (_, pattern_errors) =
-                run_patterns(&proc, &mut processed, &patterns, &fabric_patterns_dir(), !to_stdout).await;
+            let (_, pattern_errors) = run_patterns(
+                &proc,
+                &mut processed,
+                &patterns,
+                &fabric_patterns_dir(),
+                !to_stdout,
+            )
+            .await;
 
             if to_stdout {
                 // Salida para otros programas: un patrón fallido es error, no salida parcial (auditoría #4)
@@ -1030,10 +1090,17 @@ async fn cmd_process(
 
             // Nota + estado. Si la nota falla: error, sin marcar ni imprimir éxito.
             let vault = cfg.output.obsidian_vault.as_ref().map(PathBuf::from);
-            let (note_path, _) =
-                finish_video(vault.as_deref(), &processed, None, dry_run, &mut state, &state_path, async || Ok(false))
-                    .await
-                    .context("No se pudo crear la nota; el video no se marcó como procesado")?;
+            let (note_path, _) = finish_video(
+                vault.as_deref(),
+                &processed,
+                None,
+                dry_run,
+                &mut state,
+                &state_path,
+                async || Ok(false),
+            )
+            .await
+            .context("No se pudo crear la nota; el video no se marcó como procesado")?;
             let note_path = note_path.map(|p| p.to_string_lossy().to_string());
 
             // Print report
@@ -1077,7 +1144,10 @@ async fn cmd_process(
 }
 
 fn fabric_patterns_dir() -> String {
-    format!("{}/.config/fabric/patterns", std::env::var("HOME").unwrap_or_default())
+    format!(
+        "{}/.config/fabric/patterns",
+        std::env::var("HOME").unwrap_or_default()
+    )
 }
 
 /// Corre los patrones de Fabric y agrega su salida a `processed.fabric_output`.
@@ -1096,9 +1166,17 @@ async fn run_patterns(
         log::info!("  🧠 Ejecutando patrón de Fabric: {}...", pattern_name);
         let start = std::time::Instant::now();
         let res = proc
-            .process_with_pattern(&processed.video, processed.transcript.as_deref(), pattern_name, patterns_dir)
+            .process_with_pattern(
+                &processed.video,
+                processed.transcript.as_deref(),
+                pattern_name,
+                patterns_dir,
+            )
             .await;
-        times.push((pattern_name.clone(), format!("{:.1}s", start.elapsed().as_secs_f64())));
+        times.push((
+            pattern_name.clone(),
+            format!("{:.1}s", start.elapsed().as_secs_f64()),
+        ));
 
         match res {
             Ok(fabric_output) => {
@@ -1113,7 +1191,9 @@ async fn run_patterns(
 
                 // Log temporal de salidas de Fabric
                 if log_to_file {
-                    if let Err(e) = log_fabric_output_temp(&processed.video, pattern_name, &fabric_output) {
+                    if let Err(e) =
+                        log_fabric_output_temp(&processed.video, pattern_name, &fabric_output)
+                    {
                         log::warn!("  ⚠️ No se pudo guardar el log temporal de Fabric: {e}");
                     }
                 }
@@ -1166,20 +1246,23 @@ async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
     if home.is_empty() {
         anyhow::bail!("HOME environment variable is not set");
     }
-    
+
     let target_dir = std::path::PathBuf::from(&home)
         .join(".config")
         .join("fabric")
         .join("patterns");
 
     if target_dir.exists() && !force {
-        println!("⚠️  El directorio de patrones ya existe en {:?}", target_dir);
+        println!(
+            "⚠️  El directorio de patrones ya existe en {:?}",
+            target_dir
+        );
         println!("   Usa `yt2action sync-patterns --force` para forzar la actualización.");
         return Ok(());
     }
 
     println!("📥 Sincronizando patrones de Fabric desde el repositorio oficial...");
-    
+
     let tmp_dir = unique_tmp_dir("yt2action-fabric")?;
     let res = fetch_fabric_patterns(&tmp_dir, &target_dir);
     let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -1193,8 +1276,13 @@ async fn cmd_sync_patterns(force: bool) -> anyhow::Result<()> {
 
 /// Clona solo las carpetas de patrones de Fabric en `tmp_dir` (sparse checkout: ~4 MB
 /// contra ~47 MB del clon superficial completo) y las copia a `target_dir`.
-fn fetch_fabric_patterns(tmp_dir: &std::path::Path, target_dir: &std::path::Path) -> anyhow::Result<()> {
-    println!("   Clonando las carpetas de patrones de https://github.com/danielmiessler/fabric.git ...");
+fn fetch_fabric_patterns(
+    tmp_dir: &std::path::Path,
+    target_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    println!(
+        "   Clonando las carpetas de patrones de https://github.com/danielmiessler/fabric.git ..."
+    );
     let git = |args: &[&str]| -> anyhow::Result<()> {
         let status = std::process::Command::new("git")
             .args(args)
@@ -1204,14 +1292,25 @@ fn fetch_fabric_patterns(tmp_dir: &std::path::Path, target_dir: &std::path::Path
         anyhow::ensure!(status.success(), "Error: falló `git {}`", args.join(" "));
         Ok(())
     };
-    git(&["clone", "-q", "--depth", "1", "--filter=blob:none", "--sparse",
-          "https://github.com/danielmiessler/fabric.git", "."])?;
+    git(&[
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--filter=blob:none",
+        "--sparse",
+        "https://github.com/danielmiessler/fabric.git",
+        ".",
+    ])?;
     git(&["sparse-checkout", "set", "data/patterns", "patterns"])?;
 
     let source_patterns = find_patterns_dir(tmp_dir).context(
         "Error: no se encontró 'data/patterns' ni 'patterns' en el repositorio de Fabric.",
     )?;
-    println!("   Copiando patrones de {:?} a {:?}", source_patterns, target_dir);
+    println!(
+        "   Copiando patrones de {:?} a {:?}",
+        source_patterns, target_dir
+    );
     copy_dir_all(&source_patterns, target_dir)?;
     Ok(())
 }
@@ -1247,7 +1346,10 @@ async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
             if state.processed_ids.is_empty() {
                 println!("No hay videos registrados en el historial de procesados.");
             } else {
-                println!("Historial de videos procesados ({} total):", state.processed_ids.len());
+                println!(
+                    "Historial de videos procesados ({} total):",
+                    state.processed_ids.len()
+                );
                 for id in &state.processed_ids {
                     println!("  - https://youtube.com/watch?v={}", id);
                 }
@@ -1276,7 +1378,10 @@ async fn cmd_state(subcommand: StateSubcommands) -> anyhow::Result<()> {
                 save_state(&state_path, &state)?;
                 println!("✅ Video {} eliminado del historial de procesados.", id);
             } else {
-                println!("⚠️ El video {} no se encuentra en el historial de procesados.", id);
+                println!(
+                    "⚠️ El video {} no se encuentra en el historial de procesados.",
+                    id
+                );
             }
         }
     }
@@ -1303,13 +1408,19 @@ fn extract_video_id(input: &str) -> String {
     if input.contains("youtube.com/watch") {
         if let Some(pos) = input.find("v=") {
             let start = pos + 2;
-            let end = input[start..].find('&').map(|idx| start + idx).unwrap_or(input.len());
+            let end = input[start..]
+                .find('&')
+                .map(|idx| start + idx)
+                .unwrap_or(input.len());
             return input[start..end].to_string();
         }
     } else if input.contains("youtu.be/") {
         if let Some(pos) = input.rfind('/') {
             let start = pos + 1;
-            let end = input[start..].find('?').map(|idx| start + idx).unwrap_or(input.len());
+            let end = input[start..]
+                .find('?')
+                .map(|idx| start + idx)
+                .unwrap_or(input.len());
             return input[start..end].to_string();
         }
     }
@@ -1328,7 +1439,16 @@ mod tests {
         let vault = dir.join("vault");
         std::fs::write(&vault, "un archivo, no un directorio").unwrap();
         let mut state = types::ProcessState::new();
-        let r = finish_video(Some(&vault), &processed_video("abc", "T"), None, false, &mut state, &dir.join("state.json"), async || Ok(false)).await;
+        let r = finish_video(
+            Some(&vault),
+            &processed_video("abc", "T"),
+            None,
+            false,
+            &mut state,
+            &dir.join("state.json"),
+            async || Ok(false),
+        )
+        .await;
         assert!(r.is_err(), "la nota falló: no es éxito");
         assert!(!state.is_processed("abc"));
     }
@@ -1340,7 +1460,10 @@ mod tests {
         std::fs::write(&path, "{\"processed_ids\": [\"a\", ").unwrap();
         let e = load_state(&path).expect_err("corrupto no es un estado vacío");
         assert!(format!("{e:#}").contains("state.json"), "{e:#}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"processed_ids\": [\"a\", ");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"processed_ids\": [\"a\", "
+        );
     }
 
     // Auditoría #9: con playlist de procesados, el estado se marca y guarda ANTES de
@@ -1367,8 +1490,15 @@ mod tests {
         .await;
         let (_, moved) = r.expect("un fallo al mover no es un fallo del video");
         assert!(!moved);
-        assert!(state.is_processed("abc"), "sin marca, el próximo run lo reprocesa");
-        assert!(std::fs::read_to_string(&state_path).unwrap_or_default().contains("abc"));
+        assert!(
+            state.is_processed("abc"),
+            "sin marca, el próximo run lo reprocesa"
+        );
+        assert!(
+            std::fs::read_to_string(&state_path)
+                .unwrap_or_default()
+                .contains("abc")
+        );
     }
 
     // Auditoría #4: un patrón vacío o que falla queda en la lista de fallidos, no en la nota.
@@ -1393,7 +1523,17 @@ mod tests {
         let state_path = dir.join("state.json");
         let mut state = types::ProcessState::new();
         for id in ["v1", "v2"] {
-            finish_video(Some(&dir.join("vault")), &processed_video(id, id), None, false, &mut state, &state_path, async || Ok(false)).await.unwrap();
+            finish_video(
+                Some(&dir.join("vault")),
+                &processed_video(id, id),
+                None,
+                false,
+                &mut state,
+                &state_path,
+                async || Ok(false),
+            )
+            .await
+            .unwrap();
             let on_disk = std::fs::read_to_string(&state_path).unwrap_or_default();
             assert!(on_disk.contains(id), "{id} tiene que estar en disco ya");
         }
@@ -1435,7 +1575,10 @@ mod tests {
     }
 }
 
-fn get_video_metadata_ytdlp(yt_dlp_path: &str, video_id: &str) -> anyhow::Result<crate::types::Video> {
+fn get_video_metadata_ytdlp(
+    yt_dlp_path: &str,
+    video_id: &str,
+) -> anyhow::Result<crate::types::Video> {
     let url = format!("https://www.youtube.com/watch?v={}", video_id);
     let output = std::process::Command::new(yt_dlp_path)
         .args(&["--dump-json", "--skip-download", &url])
@@ -1448,16 +1591,22 @@ fn get_video_metadata_ytdlp(yt_dlp_path: &str, video_id: &str) -> anyhow::Result
     }
 
     let json_str = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .context("Failed to parse yt-dlp metadata JSON")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).context("Failed to parse yt-dlp metadata JSON")?;
 
     let id = json["id"].as_str().unwrap_or(video_id).to_string();
     let title = json["title"].as_str().unwrap_or("").to_string();
-    let channel = json["channel"].as_str().or_else(|| json["uploader"].as_str()).unwrap_or("").to_string();
+    let channel = json["channel"]
+        .as_str()
+        .or_else(|| json["uploader"].as_str())
+        .unwrap_or("")
+        .to_string();
     let description = json["description"].as_str().unwrap_or("").to_string();
-    
+
     // Parse duration
-    let duration_seconds = json["duration"].as_u64().or_else(|| json["duration"].as_f64().map(|f| f as u64));
+    let duration_seconds = json["duration"]
+        .as_u64()
+        .or_else(|| json["duration"].as_f64().map(|f| f as u64));
 
     // Metrics
     let view_count = json["view_count"].as_u64();
@@ -1467,7 +1616,12 @@ fn get_video_metadata_ytdlp(yt_dlp_path: &str, video_id: &str) -> anyhow::Result
     // Published date (yt-dlp outputs "YYYYMMDD", let's format it as "YYYY-MM-DD")
     let raw_date = json["upload_date"].as_str().unwrap_or("");
     let published_at = if raw_date.len() == 8 {
-        format!("{}-{}-{}", &raw_date[0..4], &raw_date[4..6], &raw_date[6..8])
+        format!(
+            "{}-{}-{}",
+            &raw_date[0..4],
+            &raw_date[4..6],
+            &raw_date[6..8]
+        )
     } else {
         raw_date.to_string()
     };
@@ -1497,22 +1651,28 @@ fn log_fabric_output_temp(
         std::fs::create_dir_all(target_dir)?;
     }
     let log_path = target_dir.join("fabric_outputs_temp.log");
-    
+
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)?;
-        
+
     let now = chrono::Local::now().to_rfc3339();
-    
-    writeln!(file, "================================================================================")?;
+
+    writeln!(
+        file,
+        "================================================================================"
+    )?;
     writeln!(file, "Date/Time:    {}", now)?;
     writeln!(file, "Video ID:     {}", video.id)?;
     writeln!(file, "Video Title:  {}", video.title)?;
     writeln!(file, "Pattern:      {}", pattern_name)?;
-    writeln!(file, "================================================================================")?;
+    writeln!(
+        file,
+        "================================================================================"
+    )?;
     writeln!(file, "{}\n", output)?;
-    
+
     Ok(())
 }
