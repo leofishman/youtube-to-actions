@@ -382,19 +382,36 @@ mod tests {
     use crate::types::test_util::tmp_dir;
 
     /// `ytt` falso: guarda sus argumentos en `args`, escribe `texto` en el `-o` y sale con `code`.
-    fn fake_ytt(dir: &Path, texto: &str, code: i32) -> String {
+    /// Escribe un script ejecutable sin ETXTBSY: otro test puede hacer fork con nuestro fd de
+    /// escritura abierto, así que se prueba el exec (sin efectos) hasta que deje de fallar.
+    fn write_exec(script: &Path, content: &str) {
         use std::os::unix::fs::PermissionsExt;
+        let content = content.replacen('\n', "\n[ -n \"$YT2_PROBE\" ] && exit 0\n", 1);
+        std::fs::write(script, content).unwrap();
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..200 {
+            match std::process::Command::new(script)
+                .env("YT2_PROBE", "1")
+                .status()
+            {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                _ => return,
+            }
+        }
+    }
+
+    fn fake_ytt(dir: &Path, texto: &str, code: i32) -> String {
         let script = dir.join("ytt");
-        std::fs::write(
+        write_exec(
             &script,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n\
                  while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=\"$2\"; shift; done\n\
                  printf '{texto}' > \"$out\"\nexit {code}\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         script.to_string_lossy().into_owned()
     }
 
@@ -422,10 +439,8 @@ mod tests {
 
     /// Script falso `name` en `dir` con el cuerpo `sh` dado
     fn fake(dir: &Path, name: &str, body: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let script = dir.join(name);
-        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_exec(&script, &format!("#!/bin/sh\n{body}\n"));
         script.to_string_lossy().into_owned()
     }
 
