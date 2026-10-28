@@ -20,7 +20,7 @@ Built with [Hermes 🦋](https://github.com/NousResearch/hermes-agent) as person
 - 📋 **Final report** — detailed summary of what was processed and where it was saved
 - 🔄 **Playlist cleanup** — optionally move processed videos to a second playlist
 - 🏷️ **Auto-tagging** — relevant keywords extracted from the content
-- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yaydl` (disabled by default to avoid heavy downloads). --WIP
+- 📥 **Flexible Downloads** — fetches transcripts via `ytt` and optionally downloads the video via `yt-dlp` (disabled by default to avoid heavy downloads). --WIP
 - 💾 **State tracking** — only processes new videos (use `--force` to reprocess)
 
 ## Quick Start
@@ -59,7 +59,7 @@ sudo cp target/release/yt2action /usr/local/bin/
 | **Google Cloud project**      | OAuth 2.0 access to your private YouTube playlists                     | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials → Create OAuth client ID (Desktop App) |
 | **`credentials.json`**        | OAuth client secret — place in project root                            | Downloaded during OAuth client creation above                                                                                   |
 | **YouTube Data API v3**       | Must be enabled for your project                                       | [Enable here](https://console.cloud.google.com/apis/library/youtube.googleapis.com)                                             |
-| **ytt & yaydl**               | Transcript extraction and video downloading                            | Install via your package manager or GitHub                                                                                      |
+| **ytt & yt-dlp**              | Transcript extraction and video downloading                            | Install via your package manager or GitHub                                                                                      |
 | **yt-dlp, ffmpeg + ASR** (opcional) | Solo para videos sin subtítulos: audio + transcripción local | Ver [Videos sin subtítulos](#videos-sin-subtítulos-respaldo-de-audio--asr) |
 | **Super Productivity**        | Receives tasks via Local REST API                                      | Settings → Misc → **Enable local REST API** (port 3876)                                                                         |
 | **LLM server**                | AI processing: OpenAI-compatible API (llama.cpp, Ollama, OpenAI, etc.) | See [Configuration](#configuration) below                                                                                       |
@@ -180,7 +180,14 @@ El respaldo baja **solo el audio** con `yt-dlp` y lo pasa a un comando de transc
 [storage]
 yt_dlp_path = "yt-dlp"
 # {audio} = archivo de audio; {out} (opcional) = archivo de salida. Sin {out} se lee stdout.
-asr_command = "ffmpeg -loglevel error -y -i {audio} -ar 16000 -ac 1 {audio}.wav && whisper-cli -m ~/models/ggml-large-v3-turbo.bin -f {audio}.wav -nt -np"
+# Servicio faster-whisper compatible con OpenAI (response_format=text devuelve texto plano):
+asr_command = 'curl -sS -m 3600 -F file=@{audio} -F model=whisper-1 -F language=es -F response_format=text http://192.168.1.150:8091/v1/audio/transcriptions'
+# Si el servidor pide Bearer, el token NO va en este archivo: leelo de un archivo fuera del repo
+# (o de una variable de entorno, $ASR_TOKEN) al ejecutar el comando, que corre con `sh -c`:
+#   asr_command = 'curl -sS -m 3600 -H "Authorization: Bearer $(cat ~/.config/yt2action/asr_token)" -F file=@{audio} ...'
+# Alternativa local con whisper.cpp:
+#   asr_command = "ffmpeg -loglevel error -y -i {audio} -ar 16000 -ac 1 {audio}.wav && whisper-cli -m ~/models/ggml-large-v3-turbo.bin -f {audio}.wav -nt -np"
+# max_downloads_per_day = 5                 # tope diario de yt-dlp (audio de respaldo + video)
 # yt_dlp_cookies_from_browser = "firefox"   # opcional
 ```
 
@@ -190,10 +197,11 @@ Sin `asr_command` no hay respaldo y el error dice: *el video no tiene subtítulo
 > **Riesgo de baneo de IP.** Descargar con `yt-dlp` es lo que más expone la IP a que YouTube la limite (HTTP 429, captcha, "Sign in to confirm you're not a bot"). Por eso el respaldo:
 > - es lo único que descarga audio: un video con subtítulos nunca llama a `yt-dlp`;
 > - hace una sola descarga por video y reusa `audio.*` y `transcript.txt` si ya existen (borrá el audio a mano si querés bajarlo de nuevo);
+> - **tope diario**: `max_downloads_per_day` (por defecto 5) cuenta cada ejecución de `yt-dlp`, audio de respaldo y `--download-video` juntos, en `downloads.json` del directorio de datos de la herramienta; se reinicia cada día y al llegar al tope falla con un mensaje claro sin tocar `yt-dlp` (los cache hits no cuentan);
 > - pasa límites prudentes: `--limit-rate 2M --sleep-requests 1 --retries 2 --fragment-retries 2 --extractor-retries 1`, un video a la vez, nunca en bucle ni en paralelo;
 > - ante 429/captcha/"Sign in" **corta y no reintenta**; esperá unas horas antes de volver a correr. `yt_dlp_cookies_from_browser` puede ayudar si pide login, pero ata la cuenta a la actividad de `yt-dlp`: usalo con criterio.
 >
-> Con `run` sobre muchos videos sin subtítulos, usá `--limit` bajo. (La ruta `--download-video`, que baja el video entero, es aparte y no tiene estos límites.)
+> Con `run` sobre muchos videos sin subtítulos, usá `--limit` bajo. `--download-video` (video entero) usa el mismo código y los mismos límites: un solo intento de `yt-dlp` (sin cascada de navegadores ni otros programas), cookies solo si `yt_dlp_cookies_from_browser` está configurado, y reusa `video.*` si ya existe.
 
 ### `yt2action list`
 
@@ -311,7 +319,7 @@ yt2action run
         │
        ├── YouTube Data API v3 → fetch playlist (OAuth2)
        ├── ytt → fetch transcript (saves to local transcript.txt)
-       ├── yaydl → optionally download video (local storage)
+       ├── yt-dlp → optionally download video (local storage)
        ├── Phase 1: AI classification → category + folder + tags
         │     (or via Fabric pattern if --pattern is set)
         └── Actions:
@@ -353,7 +361,7 @@ src/
 ├── config.rs       → TOML config loader
 ├── types.rs        → Video, ProcessedVideo, Classification, ProcessResult
 ├── youtube.rs      → YouTube Data API v3 + OAuth2 + playlist management
-├── downloader.rs   → Transcript (ytt) and Video (yaydl) manager
+├── downloader.rs   → Transcript (ytt) and Video (yt-dlp) manager
 ├── processor.rs    → LLM client (OpenAI-compatible) + Fabric pattern support
 ├── sp_api.rs       → Super Productivity REST API client
 └── obsidian.rs     → Markdown note writer for Obsidian vault
