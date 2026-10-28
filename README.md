@@ -182,9 +182,8 @@ yt_dlp_path = "yt-dlp"
 # {audio} = archivo de audio; {out} (opcional) = archivo de salida. Sin {out} se lee stdout.
 # Servicio faster-whisper compatible con OpenAI (response_format=text devuelve texto plano):
 asr_command = 'curl -sS -m 3600 -F file=@{audio} -F model=whisper-1 -F language=es -F response_format=text http://192.168.1.150:8091/v1/audio/transcriptions'
-# Si el servidor pide Bearer, el token NO va en este archivo: leelo de un archivo fuera del repo
-# (o de una variable de entorno, $ASR_TOKEN) al ejecutar el comando, que corre con `sh -c`:
-#   asr_command = 'curl -sS -m 3600 -H "Authorization: Bearer $(cat ~/.config/yt2action/asr_token)" -F file=@{audio} ...'
+# Si tu servicio de ASR pide credencial, no la pongas en este archivo: leela de un archivo o
+# variable de entorno fuera del repo (el comando corre con `sh -c`).
 # Alternativa local con whisper.cpp:
 #   asr_command = "ffmpeg -loglevel error -y -i {audio} -ar 16000 -ac 1 {audio}.wav && whisper-cli -m ~/models/ggml-large-v3-turbo.bin -f {audio}.wav -nt -np"
 # max_downloads_per_day = 5                 # tope diario de yt-dlp (audio de respaldo + video)

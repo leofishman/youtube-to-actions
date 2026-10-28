@@ -818,8 +818,8 @@ llm_model = "llama3.2"
 # Videos SIN subtítulos: se baja solo el audio con yt-dlp (una vez, con límites) y se
 # transcribe con este comando. Plantilla: {audio} = archivo de audio; {out} (opcional) = archivo
 # de salida; sin {out} la transcripción se lee de stdout. Sin esto, esos videos dan error.
-# Servicio faster-whisper compatible con OpenAI (si pide Bearer, NO pongas el token acá:
-# usá -H "Authorization: Bearer $(cat ~/.config/yt2action/asr_token)"). Alternativa: whisper.cpp, ver README.
+# Servicio faster-whisper compatible con OpenAI. Si tu servicio de ASR pide credencial, no la
+# pongas en este archivo: leela de un archivo o variable fuera del repo. Alternativa: whisper.cpp, ver README.
 # asr_command = 'curl -sS -m 3600 -F file=@{audio} -F model=whisper-1 -F language=es -F response_format=text http://192.168.1.150:8091/v1/audio/transcriptions'
 # Tope diario de ejecuciones de yt-dlp (audio de respaldo y --download-video juntos)
 # max_downloads_per_day = 5
